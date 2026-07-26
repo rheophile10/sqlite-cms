@@ -423,6 +423,13 @@ mark{background:var(--mark);border-radius:2px;padding:0 2px}
 .postlist.grouped .inner a{color:var(--fg);text-decoration:none}
 .postlist.grouped .inner a:hover{color:var(--accent)}
 
+.part.raw{margin:30px 0}
+.part.raw .raw-frame{width:100%;border:1px solid var(--rule);border-radius:12px;background:var(--bg);
+  display:block;height:520px}
+.part.raw .raw-title{margin:0 0 8px;font-size:11px;text-transform:uppercase;letter-spacing:.09em;
+  color:var(--muted);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+.part.raw .raw-caption{color:var(--muted);font-size:13px;margin-top:9px;
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
 /* structure */
 .toc{list-style:none;margin:26px 0 0;padding:0;font-size:16px}
 .toc li{padding:5px 0;border-top:1px solid var(--rule)}

@@ -334,10 +334,12 @@ export async function renderPath(db: Db, path: string, options: RenderOptions): 
       const docs = await listDocuments(db, { type: 'post', status: 'published' });
       const views: DocView[] = [];
       for (const doc of docs) views.push(docView(base, doc, await termsForDocument(db, doc.id)));
+      // Both taxonomies reach the index; which one a theme shows is the theme's business.
       const categories = (await listTerms(db, 'category')).map((t) => ({
         ...t,
         url: termUrl(base, t),
       }));
+      const tags = (await listTerms(db, 'tag')).map((t) => ({ ...t, url: termUrl(base, t) }));
       const collections = (await listCollections(db))
         .filter((c) => c.count > 0)
         .map((c) => ({ ...c, url: collectionUrl(base, c.slug) }));
@@ -350,6 +352,7 @@ export async function renderPath(db: Db, path: string, options: RenderOptions): 
           query: '',
           posts: views,
           categories,
+          tags,
           collections,
         }),
       };

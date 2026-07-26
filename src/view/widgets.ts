@@ -27,6 +27,7 @@ export const BUILTIN_WIDGETS = [
   'figure',
   'video',
   'story',
+  'raw',
   'sealed',
 ] as const;
 
@@ -146,6 +147,40 @@ const STORY = `<section class="part story" id="{{anchor}}">
   {{/if}}
 </section>`;
 
+// A whole self-contained document, embedded.
+//
+// For an entry that is not prose at all — an interactive piece that brings its own stylesheet and
+// its own JavaScript. Rendering that inline would let its CSS restyle the page around it and its
+// scripts reach the site's own document, so it goes in a sandboxed srcdoc frame instead: scripts
+// run, nothing leaks either way, and the frame has an opaque origin because `allow-same-origin` is
+// deliberately absent.
+//
+// `srcdoc` is interpolated *escaped* — it is an attribute value, and `{{ }}` is exactly right for
+// one. The height listener is installed once per page and matches frames by contentWindow, which is
+// the only handle that works across the sandbox boundary.
+const RAW = `<div class="part raw" id="{{anchor}}">
+  {{#if title}}<p class="raw-title">{{title}}</p>{{/if}}
+  <iframe class="raw-frame" title="{{#if title}}{{title}}{{else}}Embedded document{{/if}}"
+          sandbox="allow-scripts allow-popups" srcdoc="{{srcdoc}}"></iframe>
+  {{#if caption}}<p class="raw-caption">{{{caption}}}</p>{{/if}}
+</div>
+<script>
+(function () {
+  if (window.__cmsRawHeights) return;
+  window.__cmsRawHeights = true;
+  addEventListener('message', function (ev) {
+    if (!ev.data || ev.data.type !== 'cms:raw-height') return;
+    var frames = document.querySelectorAll('iframe.raw-frame');
+    for (var i = 0; i < frames.length; i++) {
+      if (frames[i].contentWindow === ev.source) {
+        frames[i].style.height = Math.max(120, ev.data.height) + 'px';
+        return;
+      }
+    }
+  });
+})();
+</script>`;
+
 // A part whose content is encrypted. The ciphertext is never emitted — there is no reason for it
 // to reach the page, and putting it in the DOM would invite somebody to think it is protected
 // there. When a key is available the renderer is handed the decrypted part instead of this one.
@@ -166,5 +201,6 @@ export const DEFAULT_WIDGETS: Record<string, string> = {
   'widget:figure': FIGURE,
   'widget:video': VIDEO,
   'widget:story': STORY,
+  'widget:raw': RAW,
   'widget:sealed': SEALED,
 };
