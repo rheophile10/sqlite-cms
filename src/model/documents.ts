@@ -6,7 +6,7 @@
 // weblog is the degenerate case where everything is a top-level `post`.
 //
 // A document has no body. Its content is its `parts` — see parts.ts.
-import type { Db } from './db.js';
+import type { Db } from '../engine/db.js';
 
 export type DocumentType = 'post' | 'page' | 'section' | 'chapter' | 'book' | 'rule';
 export type DocumentStatus = 'draft' | 'published';

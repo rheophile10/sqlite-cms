@@ -8,7 +8,7 @@
 //
 // Template language lives in template.ts. `{{{x}}}` is raw, `{{x}}` is escaped — part payloads
 // are raw on purpose, which is what lets a post ship its own <script>.
-import type { Db } from './db.js';
+import type { Db } from '../engine/db.js';
 import { DEFAULT_WIDGETS } from './widgets.js';
 
 export type PageTemplateName =

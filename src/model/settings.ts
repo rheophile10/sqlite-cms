@@ -1,5 +1,5 @@
 // Site options — wp_options, minus the serialized-PHP part.
-import type { Db } from './db.js';
+import type { Db } from '../engine/db.js';
 
 export const DEFAULT_SETTINGS: Record<string, string> = {
   'site.title': 'Paged',

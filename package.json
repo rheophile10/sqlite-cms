@@ -10,8 +10,10 @@
     "dev": "node embed.mjs && vite",
     "build": "node embed.mjs && tsc --noEmit && vite build",
     "serve": "node serve.mjs",
-    "test": "node embed.mjs && tsc -p tsconfig.test.json && cp src/wasm.js .build-test/wasm.js && node --test test/engine.test.mjs",
-    "test:e2e": "npm run build && node --test test/e2e.test.mjs"
+    "test": "node embed.mjs && tsc -p tsconfig.test.json && cp src/engine/wasm.js .build-test/engine/wasm.js && node --test test/engine.test.mjs",
+    "test:e2e": "npm run build && node --test test/e2e.test.mjs",
+    "demo": "npm run build && node demo/walkthrough.mjs",
+    "demo:headed": "npm run build && node demo/walkthrough.mjs --headed"
   },
   "dependencies": {
     "@vlcn.io/wa-sqlite": "^0.22.0"

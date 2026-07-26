@@ -11,7 +11,7 @@
 // The docstring on the Python original anticipates the upgrade path and it still holds: when
 // embeddings are available, keep this shape, add a vectors table, and swap the vector source.
 // `relations` and every consumer of it stay exactly as they are.
-import type { Db } from './db.js';
+import type { Db } from '../engine/db.js';
 import { link, clearByOrigin, type RelationScope } from './relations.js';
 
 /**

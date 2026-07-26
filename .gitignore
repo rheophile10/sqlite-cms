@@ -1,3 +1,4 @@
 node_modules/
-src/wasm.js
+src/engine/wasm.js
 .build-test/
+demo/screenshots/

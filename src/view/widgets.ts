@@ -12,7 +12,7 @@
 // An unknown kind falls through to `widget:html`, which emits `data.html` verbatim. That makes
 // the fallback total: any part, however malformed its kind, renders as something.
 import { renderTemplate } from './template.js';
-import { partData, type Part } from './parts.js';
+import { partData, type Part } from '../model/parts.js';
 
 /** Kinds with a built-in renderer. Others are legal; they just need a template row. */
 export const BUILTIN_WIDGETS = [

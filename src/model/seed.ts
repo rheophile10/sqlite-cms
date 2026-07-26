@@ -4,7 +4,7 @@
 // Authored as real `parts` rather than blobs of HTML, because the demo should exercise the model
 // it is demonstrating. Between them these documents use nine widget kinds, a two-level hierarchy,
 // tags, categories, a media BLOB and — after the first similarity run — computed relations.
-import type { Db } from './db.js';
+import type { Db } from '../engine/db.js';
 import { createDocument, type DocumentType } from './documents.js';
 import { ensureCollection } from './collections.js';
 import { addMedia } from './media.js';

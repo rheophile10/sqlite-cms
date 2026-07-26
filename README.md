@@ -36,6 +36,7 @@ npm run build      # → docs/index.html (self-contained) + docs/sw.js + docs/40
 npm run serve      # static server, so the Service Worker path is reachable
 npm test           # model, routing, widgets, similarity, paging  (25 tests, Node)
 npm run test:e2e   # both transports in real Chromium            (17 tests)
+npm run demo       # narrated walkthrough + screenshots          (20 steps)
 ```
 
 Then either open `docs/index.html` by double-clicking it, or `npm run serve` and visit
@@ -56,8 +57,8 @@ recipients
 document_keys per-document encryption keys, sealed per keyholder
 ```
 
-A document has no `body`. Nine widget kinds ship built in — `prose`, `heading`, `code`, `quote`,
-`list`, `table`, `callout`, `figure`, `video`, `story`, `html`, `sealed` — and an unknown kind falls
+A document has no `body`. Twelve widget kinds ship built in — `prose`, `heading`, `html`, `code`,
+`quote`, `list`, `table`, `callout`, `figure`, `video`, `story`, `sealed` — and an unknown kind falls
 back to `html`, so any part renders as something.
 
 Routes:
@@ -100,27 +101,51 @@ Both numbers took a schema fix to get. See below.
 
 ## Layout
 
+`src/` is grouped by what each thing is responsible for, which is also the order data flows through
+it — rows come out of `engine`, get shape from `model`, become HTML in `view`, and reach the browser
+via `serve`:
+
+```
+src/
+  engine/   the SQLite seam. db.ts, and the generated wasm payload
+  model/    the content model — one file per concern, no HTML anywhere
+  view/     rows to HTML — the template language, the theme, widgets, the router
+  serve/    how those bytes reach the frame: Service Worker or blob:
+  admin/    the editing UI
+```
+
 | file | |
 |---|---|
-| `src/db.ts` | engine seam: wasm, VFS registration, serialized query queue. Copied from the reference implementation |
-| `src/schema.ts` | the model, plus the v1→v2 migration |
-| `src/documents.ts` | documents: CRUD, slugs, the hierarchy, title search |
-| `src/parts.ts` | parts: typed payloads, derived text, part-level search |
-| `src/widgets.ts` | part → HTML, through a template named `widget:<kind>` |
-| `src/collections.ts` | blogs, books, shelves |
-| `src/relations.ts` | typed edges, and the "related" queries |
-| `src/similarity.ts` | TF-IDF cosine — pure function plus a db-writing wrapper |
-| `src/taxonomy.ts` | categories and tags |
-| `src/media.ts` | the media library, as BLOBs |
-| `src/theme.ts` | default page templates and the stylesheet, seeded as rows |
-| `src/template.ts` | the template language (`{{x}}`, `{{{raw}}}`, `{{#each}}`, `{{#if}}`) |
-| `src/render.ts` | **the router and renderer.** Path in, status + MIME + body out. DOM-free, so Node can test it |
-| `src/transport.ts` | picks Service Worker or `blob:` from the environment; the only file needing a DOM |
+| `engine/db.ts` | wasm, VFS registration, the serialized query queue. Copied from the reference implementation |
+| `engine/wasm.js` | **generated** by `embed.mjs` — base64 of `crsqlite.wasm`, so the built page makes zero network requests. Gitignored; `wasm.d.ts` types it |
+| `model/schema.ts` | the model, plus the v1→v2 migration |
+| `model/documents.ts` | documents: CRUD, slugs, the hierarchy, title search |
+| `model/parts.ts` | parts: typed payloads, derived text, part-level search |
+| `model/collections.ts` | blogs, books, shelves |
+| `model/relations.ts` | typed edges, and the "related" queries |
+| `model/similarity.ts` | TF-IDF cosine — pure function plus a db-writing wrapper |
+| `model/taxonomy.ts` | categories and tags |
+| `model/media.ts` | the media library, as BLOBs |
+| `model/settings.ts` | site options |
+| `model/seed.ts` | demo content, authored as real parts |
+| `view/template.ts` | the template language (`{{x}}`, `{{{raw}}}`, `{{#each}}`, `{{#if}}`) |
+| `view/theme.ts` | default page templates and the stylesheet, seeded as rows |
+| `view/widgets.ts` | part → HTML, through a template named `widget:<kind>` |
+| `view/render.ts` | **the router and renderer.** Path in, status + MIME + body out. DOM-free, so Node can test it |
+| `serve/transport.ts` | picks Service Worker or `blob:` from the environment; the only file needing a DOM |
+| `admin/main.ts` | admin UI wiring |
 | `public/sw.js` | the web server, when there is one. Owns no data — asks a page and wraps the answer in a `Response` |
 | `public/404.html` | 1 KB shim so a shared permalink works on a first-ever visit, before any worker exists |
-| `src/seed.ts` | demo content, authored as real parts |
-| `src/main.ts` | admin UI wiring |
 | `serve.mjs` | static server for the hosted path |
+| `demo/` | a narrated walkthrough — see below |
+
+## Three ways to check it
+
+| | what it answers |
+|---|---|
+| `npm test` | 25 Node tests: the model, routing, widgets, similarity, paging. Fast, no browser |
+| `npm run test:e2e` | 17 Chromium tests across both transports |
+| `npm run demo` | *Show me it working.* Drives the built app through 20 narrated steps, screenshots each one, prints measured values rather than ticks. `--headed` to watch. See [`demo/`](demo) |
 
 ## The theme is data
 

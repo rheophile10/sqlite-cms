@@ -1,7 +1,7 @@
 // UI wiring only — every SQLite concern lives in db/schema/documents/parts/relations/…, and every
 // serving concern in render/transport.
-import { openDatabase, type Db } from './db.js';
-import { migrate, pageStats } from './schema.js';
+import { openDatabase, type Db } from '../engine/db.js';
+import { migrate, pageStats } from '../model/schema.js';
 import {
   childrenOf,
   createDocument,
@@ -17,8 +17,8 @@ import {
   type DocumentStatus,
   type DocumentType,
   type Visibility,
-} from './documents.js';
-import { listCollections } from './collections.js';
+} from '../model/documents.js';
+import { listCollections } from '../model/collections.js';
 import {
   addPart,
   countParts,
@@ -28,16 +28,16 @@ import {
   reorderPart,
   updatePart,
   type Part,
-} from './parts.js';
-import { BUILTIN_WIDGETS } from './widgets.js';
+} from '../model/parts.js';
+import { BUILTIN_WIDGETS } from '../view/widgets.js';
 import {
   countRelations,
   link,
   relatedDocuments,
   unlink,
   type RelationType,
-} from './relations.js';
-import { computeSimilar } from './similarity.js';
+} from '../model/relations.js';
+import { computeSimilar } from '../model/similarity.js';
 import {
   addMediaFile,
   countMedia,
@@ -45,13 +45,13 @@ import {
   formatBytes,
   listMedia,
   type MediaRow,
-} from './media.js';
-import { parseTermList, pruneOrphanTerms, setDocumentTerms, termsForDocument } from './taxonomy.js';
-import { getSetting, seedSettings, setSetting } from './settings.js';
-import { DEFAULT_TEMPLATES, TEMPLATE_ORDER, getTemplate, seedTheme, setTemplate } from './theme.js';
-import { renderPreview } from './render.js';
-import { contentBase, createTransport, isSitePath, type Transport } from './transport.js';
-import { seedContent } from './seed.js';
+} from '../model/media.js';
+import { parseTermList, pruneOrphanTerms, setDocumentTerms, termsForDocument } from '../model/taxonomy.js';
+import { getSetting, seedSettings, setSetting } from '../model/settings.js';
+import { DEFAULT_TEMPLATES, TEMPLATE_ORDER, getTemplate, seedTheme, setTemplate } from '../view/theme.js';
+import { renderPreview } from '../view/render.js';
+import { contentBase, createTransport, isSitePath, type Transport } from '../serve/transport.js';
+import { seedContent } from '../model/seed.js';
 
 const IDB_NAME = 'cms-site';
 

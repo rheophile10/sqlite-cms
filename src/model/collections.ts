@@ -3,7 +3,7 @@
 // The container a document tree hangs off. A weblog needs exactly one and mostly ignores it; a
 // corpus of rule books needs one per book, which is what makes "sections and subsections within
 // a blog" and "chapters within a book" the same mechanism.
-import type { Db } from './db.js';
+import type { Db } from '../engine/db.js';
 import { newId, slugify } from './documents.js';
 
 export type CollectionKind = 'blog' | 'book' | 'shelf';

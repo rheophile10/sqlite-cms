@@ -12,7 +12,7 @@
 //
 // `anchor` gives every part a stable fragment id, which is what makes a part addressable:
 // /p/<slug>/#<anchor> for the fragment, and /p/<slug>/part/<anchor>/ for the part on its own.
-import type { Db } from './db.js';
+import type { Db } from '../engine/db.js';
 import { flattenHtml } from './schema.js';
 import { newId, slugify, toMatchExpression } from './documents.js';
 

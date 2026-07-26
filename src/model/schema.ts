@@ -28,7 +28,7 @@
 //  4. BLOB columns go LAST in their table. SQLite stores columns in declaration order and a large
 //     BLOB overflows; reading a column positioned after it walks the whole overflow chain. This
 //     cost 302 pages of a 327-page database before `media.bytes` was moved to the end.
-import type { Db } from './db.js';
+import type { Db } from '../engine/db.js';
 
 export const SCHEMA = /* sql */ `
 -- A blog, or a book, or a shelf of books. Documents belong to exactly one.

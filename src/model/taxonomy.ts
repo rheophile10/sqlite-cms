@@ -1,6 +1,6 @@
 // Categories and tags. One table, one join table — wp_terms and wp_term_relationships with
 // the taxonomy folded into a `kind` column, since two taxonomies is all this needs.
-import type { Db } from './db.js';
+import type { Db } from '../engine/db.js';
 import { newId, slugify } from './documents.js';
 
 export type TermKind = 'category' | 'tag';

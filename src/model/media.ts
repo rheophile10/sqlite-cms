@@ -5,7 +5,7 @@
 // This is where demand paging stops being a talking point. A BLOB lives in overflow pages that
 // SQLite only reads when the column is actually selected, so listing the library reads the row
 // headers and none of the image data. `listMedia` deliberately never selects `bytes`.
-import type { Db } from './db.js';
+import type { Db } from '../engine/db.js';
 import { newId, slugify } from './documents.js';
 
 export interface MediaRow {

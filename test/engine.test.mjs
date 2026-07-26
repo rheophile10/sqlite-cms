@@ -9,8 +9,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 const B = '../.build-test/';
-const { openDatabase } = await import(B + 'db.js');
-const { migrate, pageStats, flattenHtml } = await import(B + 'schema.js');
+const { openDatabase } = await import(B + 'engine/db.js');
+const { migrate, pageStats, flattenHtml } = await import(B + 'model/schema.js');
 const {
   ancestorsOf,
   childrenOf,
@@ -24,8 +24,8 @@ const {
   slugify,
   subtree,
   updateDocument,
-} = await import(B + 'documents.js');
-const { ensureCollection, listCollections } = await import(B + 'collections.js');
+} = await import(B + 'model/documents.js');
+const { ensureCollection, listCollections } = await import(B + 'model/collections.js');
 const {
   addPart,
   allParts,
@@ -37,19 +37,19 @@ const {
   searchParts,
   setParts,
   updatePart,
-} = await import(B + 'parts.js');
-const { renderPart, renderParts, DEFAULT_WIDGETS } = await import(B + 'widgets.js');
+} = await import(B + 'model/parts.js');
+const { renderPart, renderParts, DEFAULT_WIDGETS } = await import(B + 'view/widgets.js');
 const { link, unlink, relatedDocuments, clearByOrigin, countRelations } = await import(
-  B + 'relations.js'
+  B + 'model/relations.js'
 );
-const { cosineNeighbours, computeSimilar, tokenize } = await import(B + 'similarity.js');
-const { addMedia, getMediaBySlug, listMedia, countMedia } = await import(B + 'media.js');
-const { setDocumentTerms, listTerms, termsForDocument } = await import(B + 'taxonomy.js');
-const { renderPath, renderPreview, routeOf, clip, formatDate } = await import(B + 'render.js');
-const { renderTemplate, escapeHtml } = await import(B + 'template.js');
-const { seedTheme, getTemplate, setTemplate, loadTemplates } = await import(B + 'theme.js');
-const { seedSettings, setSetting } = await import(B + 'settings.js');
-const { seedContent } = await import(B + 'seed.js');
+const { cosineNeighbours, computeSimilar, tokenize } = await import(B + 'model/similarity.js');
+const { addMedia, getMediaBySlug, listMedia, countMedia } = await import(B + 'model/media.js');
+const { setDocumentTerms, listTerms, termsForDocument } = await import(B + 'model/taxonomy.js');
+const { renderPath, renderPreview, routeOf, clip, formatDate } = await import(B + 'view/render.js');
+const { renderTemplate, escapeHtml } = await import(B + 'view/template.js');
+const { seedTheme, getTemplate, setTemplate, loadTemplates } = await import(B + 'view/theme.js');
+const { seedSettings, setSetting } = await import(B + 'model/settings.js');
+const { seedContent } = await import(B + 'model/seed.js');
 
 const OPTIONS = { base: '/p/', transport: 'test' };
 
@@ -250,7 +250,7 @@ test('parts carry typed payloads, derived text, and unique anchors', async () =>
     kind: 'callout',
     data: { title: 'Careful', html: '<p>Mind the <b>gap</b></p>', tone: 'warn' },
   });
-  const part = await (await import(B + 'parts.js')).getPart(db, id);
+  const part = await (await import(B + 'model/parts.js')).getPart(db, id);
   assert.equal(part.kind, 'callout');
   assert.deepEqual(partData(part).tone, 'warn');
   // Text is flattened from every string in the payload, so a new kind is searchable for free.
@@ -287,7 +287,7 @@ test('a sealed part never contributes text to the index', async () => {
   // Sealing it must remove it from the index, not merely hide it at render time.
   await updatePart(db, secret, { kind: 'sealed', data: { ciphertext: 'AAAA', hint: 'ask me' } });
   assert.equal((await searchParts(db, 'xylophone')).length, 0, 'sealed text must not be searchable');
-  const reread = await (await import(B + 'parts.js')).getPart(db, secret);
+  const reread = await (await import(B + 'model/parts.js')).getPart(db, secret);
   assert.equal(reread.text, '', 'sealed parts store no plaintext');
 
   // The public part around it is unaffected.
@@ -327,7 +327,7 @@ test('widget renderers turn payloads into HTML and tolerate anything', async () 
   const templates = await loadTemplates(db);
   const ctx = { site: {}, base: '/p/' };
   const doc = await createDocument(db, { title: 'W', status: 'published' });
-  const { getPart } = await import(B + 'parts.js');
+  const { getPart } = await import(B + 'model/parts.js');
 
   const render = async (kind, data) => {
     const id = await addPart(db, doc, { kind, data });

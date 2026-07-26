@@ -12,9 +12,9 @@
 // Both paths call renderPath() in render.ts. The difference is purely how the bytes travel,
 // which is why the site looks identical either way — including post <script> tags, which
 // execute in both because a blob document is a real document with its own origin.
-import type { Db } from './db.js';
-import { renderPath, type RenderOptions, type Served } from './render.js';
-import { getMediaBySlug } from './media.js';
+import type { Db } from '../engine/db.js';
+import { renderPath, type RenderOptions, type Served } from '../view/render.js';
+import { getMediaBySlug } from '../model/media.js';
 
 export type TransportMode = 'sw' | 'blob';
 

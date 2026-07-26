@@ -7,7 +7,7 @@
 //   number_match  structural inference, e.g. two editions of the same numbered rule
 //
 // `origin` is what lets a recomputation clear only its own edges and leave an author's alone.
-import type { Db } from './db.js';
+import type { Db } from '../engine/db.js';
 import { newId } from './documents.js';
 
 export type RelationScope = 'document' | 'part';

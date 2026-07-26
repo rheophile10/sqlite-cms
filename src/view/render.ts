@@ -8,8 +8,8 @@
 //
 // Deliberately free of DOM APIs so the Node test suite can exercise real routing and real template
 // output. Anything needing a `document` lives in transport.ts.
-import type { Db } from './db.js';
-import { getCollectionBySlug, listCollections } from './collections.js';
+import type { Db } from '../engine/db.js';
+import { getCollectionBySlug, listCollections } from '../model/collections.js';
 import {
   ancestorsOf,
   childrenOf,
@@ -19,18 +19,18 @@ import {
   subtree,
   type Doc,
   type DocNode,
-} from './documents.js';
-import { getMediaBySlug } from './media.js';
+} from '../model/documents.js';
+import { getMediaBySlug } from '../model/media.js';
 import {
   getPartByAnchor,
   listParts,
   searchParts,
   type Part,
-} from './parts.js';
-import { relatedDocuments, relatedParts } from './relations.js';
-import { getSetting } from './settings.js';
-import { pageStats } from './schema.js';
-import { listTerms, getTermBySlug, termsForDocument, type Term } from './taxonomy.js';
+} from '../model/parts.js';
+import { relatedDocuments, relatedParts } from '../model/relations.js';
+import { getSetting } from '../model/settings.js';
+import { pageStats } from '../model/schema.js';
+import { listTerms, getTermBySlug, termsForDocument, type Term } from '../model/taxonomy.js';
 import { escapeHtml, renderTemplate } from './template.js';
 import { loadTemplates } from './theme.js';
 import { renderParts } from './widgets.js';
