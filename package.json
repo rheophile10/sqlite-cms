@@ -1,0 +1,26 @@
+{
+  "name": "sqlite-cms",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "A WordPress-shaped CMS whose HTML, theme, and media are all served out of demand-paged SQLite in the browser. Service Worker when hosted, blob: URLs at file://.",
+  "scripts": {
+    "embed": "node embed.mjs",
+    "typecheck": "tsc --noEmit",
+    "dev": "node embed.mjs && vite",
+    "build": "node embed.mjs && tsc --noEmit && vite build",
+    "serve": "node serve.mjs",
+    "test": "node embed.mjs && tsc -p tsconfig.test.json && cp src/wasm.js .build-test/wasm.js && node --test test/engine.test.mjs",
+    "test:e2e": "npm run build && node --test test/e2e.test.mjs"
+  },
+  "dependencies": {
+    "@vlcn.io/wa-sqlite": "^0.22.0"
+  },
+  "devDependencies": {
+    "fake-indexeddb": "^6.0.0",
+    "playwright": "^1.47.0",
+    "typescript": "^5.6.0",
+    "vite": "^5.4.0",
+    "vite-plugin-singlefile": "^2.0.0"
+  }
+}

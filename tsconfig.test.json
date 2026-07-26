@@ -1,0 +1,14 @@
+// Emits src/ to .build-test/ as plain JS so the Node test runner can exercise the real
+// modules. Needed because the source uses bundler-style './x.js' specifiers, which Node's
+// type-stripping does not rewrite.
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": ".build-test",
+    "rootDir": "src",
+    "declaration": false,
+    "sourceMap": false
+  },
+  "include": ["src"]
+}

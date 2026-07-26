@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SQLite CMS — HTML served out of the database</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body { margin:0; background:#0b0c0e; color:#e6e8eb;
+      font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
+
+    /* Admin on the left, the live site on the right. The frame is the point, so it gets the room. */
+    .shell { display:grid; grid-template-columns:minmax(380px,460px) 1fr; height:100vh; }
+    @media (max-width:1000px) { .shell { grid-template-columns:1fr; height:auto; } }
+
+    .admin { border-right:1px solid #24272d; display:flex; flex-direction:column; min-height:0; }
+    /* display:flex above outranks the UA stylesheet's [hidden]{display:none}, so hiding the
+       admin for a standalone permalink needs saying explicitly. */
+    .admin[hidden] { display:none; }
+    .admin-head { padding:16px 18px 12px; border-bottom:1px solid #24272d; }
+    h1 { font-size:15px; margin:0 0 3px; letter-spacing:-.01em; }
+    .sub { color:#8b93a0; font-size:12px; }
+    .pills { display:flex; gap:6px; flex-wrap:wrap; margin-top:10px; }
+    .pill { font-size:11px; padding:3px 9px; border-radius:999px; border:1px solid #2a2e34; color:#9aa2ad; white-space:nowrap; }
+    .pill.on { border-color:#2dd4bf55; color:#2dd4bf; background:#2dd4bf14; }
+    .pill.warn { border-color:#f59e0b55; color:#f59e0b; background:#f59e0b14; }
+
+    .tabs { display:flex; gap:2px; padding:10px 12px 0; border-bottom:1px solid #24272d; }
+    .tabs button { background:none; border:none; border-bottom:2px solid transparent; color:#8b93a0;
+      font:inherit; font-size:12px; font-weight:600; padding:7px 10px; cursor:pointer; text-transform:uppercase; letter-spacing:.05em; }
+    .tabs button[aria-selected="true"] { color:#2dd4bf; border-bottom-color:#2dd4bf; }
+
+    .panel { padding:16px 18px 40px; overflow-y:auto; flex:1; min-height:0; }
+    .panel[hidden] { display:none; }
+
+    h2 { font-size:11px; text-transform:uppercase; letter-spacing:.07em; color:#8b93a0; margin:0 0 9px; font-weight:600; }
+    label { display:block; font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:#6b7280; margin:12px 0 4px; }
+    input, textarea, select { width:100%; padding:8px 10px; border:1px solid #2a2e34; border-radius:7px;
+      background:#0e1013; color:#e6e8eb; font:inherit; font-size:13px; }
+    textarea { font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace; resize:vertical; }
+    #ed-body { min-height:190px; }
+    #tpl-body { min-height:340px; }
+    button { border:none; border-radius:7px; padding:8px 14px; font:inherit; font-size:13px; font-weight:600; cursor:pointer; white-space:nowrap; }
+    button:disabled { opacity:.4; cursor:not-allowed; }
+    .primary { background:#2dd4bf; color:#08221e; }
+    .ghost { background:transparent; color:#9aa2ad; border:1px solid #2a2e34; }
+    .danger { background:transparent; color:#f87171; border:1px solid #f8717144; }
+    .row { display:flex; gap:7px; margin-top:12px; flex-wrap:wrap; }
+    .row.tight { margin-top:7px; }
+    .grow { flex:1; min-width:0; }
+    .two { display:grid; grid-template-columns:1fr 1fr; gap:7px; }
+
+    ul.list { list-style:none; margin:8px 0 0; padding:0; }
+    ul.list li { border-top:1px solid #24272d; padding:8px 2px; display:flex; gap:10px; align-items:baseline; }
+    ul.list li:hover { background:#101216; }
+    ul.list button.open { background:none; border:none; color:#e6e8eb; font:inherit; font-size:13px;
+      text-align:left; padding:0; cursor:pointer; flex:1; min-width:0; }
+    ul.list button.open:hover { color:#2dd4bf; }
+    ul.list .tag { font-size:10px; text-transform:uppercase; letter-spacing:.05em; color:#6b7280;
+      border:1px solid #2a2e34; border-radius:4px; padding:1px 5px; }
+    ul.list .tag.pub { color:#2dd4bf; border-color:#2dd4bf44; }
+    ul.list .del { background:none; border:none; color:#4b5563; cursor:pointer; padding:0 2px; font-weight:400; }
+    ul.list .del:hover { color:#f87171; }
+    .empty { color:#4b5563; font-size:12px; padding:9px 2px; font-style:italic; }
+    .hint { color:#6b7280; font-size:12px; margin-top:8px; }
+    .err { color:#f87171; font-size:12px; margin-top:8px; white-space:pre-wrap; }
+    .ok { color:#2dd4bf; }
+    code { background:#1c1f24; padding:1px 5px; border-radius:4px; font-size:.87em;
+      font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+    a { color:#2dd4bf; }
+
+    /* The site */
+    .site { display:flex; flex-direction:column; min-width:0; min-height:0; }
+    .site-bar { display:flex; align-items:center; gap:8px; padding:9px 12px; border-bottom:1px solid #24272d;
+      background:#0e1013; }
+    .urlbar { flex:1; min-width:0; font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;
+      color:#9aa2ad; background:#0b0c0e; border:1px solid #24272d; border-radius:6px; padding:6px 9px;
+      overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .site-bar button { padding:6px 10px; font-size:12px; }
+    #site { flex:1; width:100%; border:none; background:#fff; min-height:520px; }
+    @media (max-width:1000px) { #site { min-height:70vh; } }
+
+    .fatal { padding:24px; color:#f87171; white-space:pre-wrap;
+      font:13px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace; }
+  </style>
+</head>
+<body>
+  <div class="shell" id="shell">
+    <!-- ─────────────── admin ─────────────── -->
+    <section class="admin">
+      <div class="admin-head">
+        <h1>SQLite CMS</h1>
+        <div class="sub">Content, theme and media in one demand-paged database.</div>
+        <div class="pills">
+          <span class="pill" id="engine">booting…</span>
+          <span class="pill" id="transport">transport…</span>
+          <span class="pill" id="stat-pages">0 pages</span>
+          <span class="pill" id="stat-media">0 media</span>
+        </div>
+      </div>
+
+      <div class="tabs" role="tablist">
+        <button id="tab-content" role="tab" aria-selected="true" aria-controls="panel-content">Content</button>
+        <button id="tab-media"   role="tab" aria-selected="false" aria-controls="panel-media">Media</button>
+        <button id="tab-theme"   role="tab" aria-selected="false" aria-controls="panel-theme">Theme</button>
+        <button id="tab-settings" role="tab" aria-selected="false" aria-controls="panel-settings">Settings</button>
+      </div>
+
+      <!-- Content -->
+      <div class="panel" id="panel-content" role="tabpanel">
+        <div class="row tight">
+          <button class="primary" id="new-post">New post</button>
+          <button class="ghost" id="new-page">New page</button>
+        </div>
+
+        <h2 style="margin-top:20px">Posts &amp; pages</h2>
+        <ul class="list" id="post-list"></ul>
+
+        <div id="editor" hidden>
+          <h2 style="margin-top:24px">Editing <span id="ed-kind" class="ok"></span></h2>
+          <label for="ed-title">Title</label>
+          <input id="ed-title" autocomplete="off" />
+          <label for="ed-slug">Slug</label>
+          <input id="ed-slug" autocomplete="off" />
+          <label for="ed-body">Body (HTML — <code>&lt;script&gt;</code> runs)</label>
+          <textarea id="ed-body" spellcheck="false"></textarea>
+          <label for="ed-excerpt">Excerpt (optional — derived from the body if blank)</label>
+          <textarea id="ed-excerpt" style="min-height:54px" spellcheck="false"></textarea>
+          <div class="two">
+            <div>
+              <label for="ed-cats">Categories (comma-separated)</label>
+              <input id="ed-cats" autocomplete="off" />
+            </div>
+            <div>
+              <label for="ed-tags">Tags (comma-separated)</label>
+              <input id="ed-tags" autocomplete="off" />
+            </div>
+          </div>
+          <label for="ed-status">Status</label>
+          <select id="ed-status">
+            <option value="draft">Draft</option>
+            <option value="published">Published</option>
+          </select>
+          <div class="row">
+            <button class="primary" id="save">Save</button>
+            <button class="ghost" id="preview">Preview draft</button>
+            <button class="ghost" id="view">View</button>
+            <button class="danger" id="delete">Delete</button>
+          </div>
+          <div class="err" id="ed-err" hidden></div>
+        </div>
+      </div>
+
+      <!-- Media -->
+      <div class="panel" id="panel-media" role="tabpanel" hidden>
+        <h2>Upload</h2>
+        <input type="file" id="media-file" multiple />
+        <div class="hint">
+          Bytes go into a <code>BLOB</code> column. Reference one in a post as
+          <code>&lt;img src="./media/<i>slug</i>"&gt;</code>.
+        </div>
+        <h2 style="margin-top:22px">Library</h2>
+        <ul class="list" id="media-list"></ul>
+        <div class="err" id="media-err" hidden></div>
+      </div>
+
+      <!-- Theme -->
+      <div class="panel" id="panel-theme" role="tabpanel" hidden>
+        <h2>Templates are rows in the database</h2>
+        <div class="hint">
+          <code>{{x}}</code> escapes, <code>{{{x}}}</code> is raw,
+          <code>{{#each xs}}…{{/each}}</code> and <code>{{#if x}}…{{else}}…{{/if}}</code> work.
+        </div>
+        <label for="tpl-name">Template</label>
+        <select id="tpl-name"></select>
+        <label for="tpl-body">Source</label>
+        <textarea id="tpl-body" spellcheck="false"></textarea>
+        <div class="row">
+          <button class="primary" id="tpl-save">Save template</button>
+          <button class="ghost" id="tpl-reset">Reset to default</button>
+        </div>
+        <div class="err" id="tpl-err" hidden></div>
+      </div>
+
+      <!-- Settings -->
+      <div class="panel" id="panel-settings" role="tabpanel" hidden>
+        <h2>Site</h2>
+        <label for="set-title">Title</label>
+        <input id="set-title" autocomplete="off" />
+        <label for="set-tagline">Tagline</label>
+        <input id="set-tagline" autocomplete="off" />
+        <div class="row"><button class="primary" id="set-save">Save settings</button></div>
+
+        <h2 style="margin-top:26px">Database</h2>
+        <div class="hint" id="db-stats">—</div>
+        <div class="row">
+          <button class="ghost" id="db-reseed">Restore demo content</button>
+          <button class="danger" id="db-wipe">Wipe everything</button>
+        </div>
+        <div class="hint">
+          Pages live in DevTools → Application → IndexedDB → <code>cms-site</code>, one record per
+          SQLite page.
+        </div>
+      </div>
+    </section>
+
+    <!-- ─────────────── the site ─────────────── -->
+    <section class="site">
+      <div class="site-bar">
+        <button class="ghost" id="site-home" title="Site home">⌂</button>
+        <button class="ghost" id="site-reload" title="Re-render">↻</button>
+        <div class="urlbar" id="site-url">—</div>
+        <button class="ghost" id="site-copy" title="Copy shareable link" disabled>Copy link</button>
+        <button class="ghost" id="site-open" title="Open in a new tab" disabled>Open</button>
+      </div>
+      <iframe id="site" title="The rendered site"></iframe>
+    </section>
+  </div>
+
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

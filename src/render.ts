@@ -1,0 +1,359 @@
+// The router and renderer — the part that stands in for PHP.
+//
+// `renderPath` takes a request path and returns a complete HTTP-shaped answer: status, MIME
+// type, and a body that is either an HTML string or raw bytes. It has no idea whether it is
+// being called by a Service Worker's fetch handler or by the blob: fallback; that is the whole
+// point of the seam. Both transports call this one function, so there is exactly one
+// description of what the site looks like.
+//
+// Deliberately free of DOM APIs so the Node test suite can exercise real routing and real
+// template output. Anything needing a `document` lives in transport.ts.
+import type { Db } from './db.js';
+import {
+  getPublishedBySlug,
+  listPosts,
+  listPostsByTerm,
+  searchPosts,
+  type Post,
+  type SearchHit,
+} from './content.js';
+import { getMediaBySlug } from './media.js';
+import { getSetting } from './settings.js';
+import { pageStats } from './schema.js';
+import { listTerms, getTermBySlug, termsForPost, type Term } from './taxonomy.js';
+import { escapeHtml, renderTemplate } from './template.js';
+import { loadTemplates } from './theme.js';
+
+export interface RenderOptions {
+  /**
+   * Site root, with trailing slash. `/` when hosted at a domain root, `/cms/docs/` under
+   * GitHub Pages. Every generated URL is built from this, so the same database renders
+   * correctly wherever it is deployed.
+   */
+  base: string;
+  /** Shown in the footer so the page states which transport produced it. */
+  transport: string;
+}
+
+export type Served =
+  | { kind: 'html'; status: number; mime: 'text/html; charset=utf-8'; body: string }
+  | { kind: 'asset'; status: number; mime: string; body: Uint8Array };
+
+/** Recognised routes, in the order they are tried. */
+export type Route =
+  | { name: 'index' }
+  | { name: 'search'; query: string }
+  | { name: 'archive'; kind: 'category' | 'tag'; slug: string }
+  | { name: 'media'; slug: string }
+  | { name: 'document'; slug: string };
+
+/**
+ * Split a request into a route. Accepts the path with or without the site base, and with or
+ * without a trailing slash, because all three show up in practice: the SW sees a full pathname,
+ * the blob transport sees whatever a link's href said.
+ */
+export function routeOf(path: string, base = '/'): Route {
+  // Strip the base, tolerating the bare form (`/p` as well as `/p/`) without also matching an
+  // unrelated sibling that merely shares the prefix (`/painting/` must not become `ainting/`).
+  let rest = path;
+  const bare = base.replace(/\/+$/, '');
+  if (bare && (rest === bare || rest.startsWith(`${bare}/`) || rest.startsWith(`${bare}?`))) {
+    rest = rest.slice(bare.length);
+  }
+  rest = rest.replace(/^\/+/, '').replace(/\/+$/, '');
+
+  // A query string may still be attached when the caller passed a raw href.
+  const [clean = '', search = ''] = rest.split('?');
+  const params = new URLSearchParams(search);
+  const segments = clean.split('/').filter(Boolean).map(decodeURIComponent);
+
+  const [first, second] = segments;
+  if (!first || first === 'index.html') return { name: 'index' };
+  if (first === 'search') return { name: 'search', query: params.get('q') ?? '' };
+  if ((first === 'category' || first === 'tag') && second)
+    return { name: 'archive', kind: first, slug: second };
+  if (first === 'media' && second) return { name: 'media', slug: second };
+  return { name: 'document', slug: first };
+}
+
+const MONTHS = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December',
+];
+
+/** `2026-07-26 14:03:11` → `July 26, 2026`. Left alone if it is not that shape. */
+export function formatDate(stamp: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(stamp);
+  if (!m) return stamp;
+  const [, year, month, day] = m;
+  return `${MONTHS[Number(month) - 1] ?? month} ${Number(day)}, ${year}`;
+}
+
+/** Strip tags and clip, for posts that never got an explicit excerpt. */
+export function deriveExcerpt(body: string, limit = 220): string {
+  const text = body
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return text.length > limit ? `${text.slice(0, limit).trimEnd()}…` : text;
+}
+
+/**
+ * Runs inside every rendered document. Link clicks and search submits become messages to the
+ * shell instead of real navigations, which is what makes one renderer work in both transports:
+ * at file:// there is no URL to navigate to, and when hosted we still want the shell's own
+ * address bar to stay in step.
+ */
+const BRIDGE = /* html */ `
+<script>
+(function () {
+  var send = function (msg) {
+    try { parent.postMessage(msg, '*'); } catch (e) {}
+  };
+  // Only intercept links that stay inside the site; leave real external links alone.
+  document.addEventListener('click', function (ev) {
+    var a = ev.target && ev.target.closest ? ev.target.closest('a[href]') : null;
+    if (!a) return;
+    var href = a.getAttribute('href') || '';
+    if (/^(https?:)?\\/\\//i.test(href) || /^(mailto|tel):/i.test(href)) return;
+    if (a.target === '_blank') return;
+    ev.preventDefault();
+    send({ type: 'cms:navigate', href: href });
+  });
+  document.addEventListener('submit', function (ev) {
+    var form = ev.target;
+    if (!form || !form.hasAttribute('data-cms-search')) return;
+    ev.preventDefault();
+    var input = form.querySelector('input[name=q]');
+    send({ type: 'cms:search', q: input ? input.value : '' });
+  });
+})();
+</script>
+`;
+
+interface PostView {
+  id: number;
+  title: string;
+  slug: string;
+  url: string;
+  created: string;
+  excerpt: string;
+  body: string;
+  status: string;
+  type: string;
+  terms?: TermView[];
+}
+
+interface TermView {
+  name: string;
+  slug: string;
+  kind: string;
+  url: string;
+  count?: number;
+}
+
+const termUrl = (base: string, term: Pick<Term, 'kind' | 'slug'>): string =>
+  `${base}${term.kind}/${encodeURIComponent(term.slug)}/`;
+
+const postUrl = (base: string, post: Pick<Post, 'slug'>): string =>
+  `${base}${encodeURIComponent(post.slug)}/`;
+
+function postView(base: string, post: Post, terms?: Term[]): PostView {
+  return {
+    id: post.id,
+    title: post.title,
+    slug: post.slug,
+    url: postUrl(base, post),
+    created: formatDate(post.created),
+    excerpt: post.excerpt || deriveExcerpt(post.body),
+    body: post.body,
+    status: post.status,
+    type: post.type,
+    ...(terms ? { terms: terms.map((t) => ({ ...t, url: termUrl(base, t) })) } : {}),
+  };
+}
+
+/** Everything the layout needs regardless of which inner template runs. */
+async function siteContext(db: Db, options: RenderOptions) {
+  const pages = await listPosts(db, { type: 'page', status: 'published' });
+  const stats = await pageStats(db);
+  return {
+    site: {
+      title: (await getSetting(db, 'site.title')) || 'A SQLite Site',
+      tagline: (await getSetting(db, 'site.tagline')) || 'Served out of the database',
+      home: options.base,
+      pages: pages.map((p) => ({ title: p.title, url: postUrl(options.base, p) })),
+    },
+    transport: options.transport,
+    pages: stats.pages,
+  };
+}
+
+/** Compose an inner template into the layout and attach the bridge. */
+function compose(
+  templates: Record<string, string>,
+  inner: string,
+  title: string,
+  data: Record<string, unknown>,
+): string {
+  const content = renderTemplate(templates[inner] ?? '', data);
+  const html = renderTemplate(templates.layout ?? '', {
+    ...data,
+    title,
+    content,
+    style: templates.style ?? '',
+  });
+  return html.includes('</body>') ? html.replace('</body>', `${BRIDGE}</body>`) : html + BRIDGE;
+}
+
+const HTML_MIME = 'text/html; charset=utf-8' as const;
+
+/**
+ * Resolve one request against the database. This is the function a Service Worker's fetch
+ * handler and the blob: fallback both call; nothing else needs to know the route table.
+ */
+export async function renderPath(
+  db: Db,
+  path: string,
+  options: RenderOptions,
+): Promise<Served> {
+  const route = routeOf(path, options.base);
+  const templates = await loadTemplates(db);
+  const base = options.base;
+
+  if (route.name === 'media') {
+    const blob = await getMediaBySlug(db, route.slug);
+    if (!blob) {
+      return {
+        kind: 'asset',
+        status: 404,
+        mime: 'text/plain; charset=utf-8',
+        body: new TextEncoder().encode(`no media ${route.slug}`),
+      };
+    }
+    return { kind: 'asset', status: 200, mime: blob.mime, body: blob.bytes };
+  }
+
+  const ctx = await siteContext(db, options);
+
+  switch (route.name) {
+    case 'index': {
+      const posts = await listPosts(db, { type: 'post', status: 'published' });
+      // Terms are fetched per post; the listing is capped, and each lookup is a single
+      // indexed join, so this stays proportional to what is actually shown.
+      const views: PostView[] = [];
+      for (const post of posts) views.push(postView(base, post, await termsForPost(db, post.id)));
+      const categories = (await listTerms(db, 'category')).map((t) => ({
+        ...t,
+        url: termUrl(base, t),
+      }));
+      return {
+        kind: 'html',
+        status: 200,
+        mime: HTML_MIME,
+        body: compose(templates, 'index', ctx.site.title, {
+          ...ctx,
+          query: '',
+          posts: views,
+          categories,
+        }),
+      };
+    }
+
+    case 'search': {
+      const hits: SearchHit[] = await searchPosts(db, route.query);
+      const results = hits.map((hit) => ({
+        title: hit.title,
+        url: postUrl(base, hit),
+        created: formatDate(hit.created),
+        // snippet() wraps matches in «» — our own delimiters, so this substitution cannot
+        // collide with author markup. Escape first, then promote the delimiters to <mark>.
+        snippet: escapeHtml(hit.snippet).replace(/«/g, '<mark>').replace(/»/g, '</mark>'),
+      }));
+      return {
+        kind: 'html',
+        status: 200,
+        mime: HTML_MIME,
+        body: compose(templates, 'search', `Search: ${route.query}`, {
+          ...ctx,
+          query: route.query,
+          results,
+          count: results.length,
+        }),
+      };
+    }
+
+    case 'archive': {
+      const term = await getTermBySlug(db, route.kind, route.slug);
+      if (!term) {
+        return {
+          kind: 'html',
+          status: 404,
+          mime: HTML_MIME,
+          body: compose(templates, 'notfound', 'Not found', { ...ctx, query: '', path }),
+        };
+      }
+      const posts = await listPostsByTerm(db, term.id);
+      return {
+        kind: 'html',
+        status: 200,
+        mime: HTML_MIME,
+        body: compose(templates, 'archive', term.name, {
+          ...ctx,
+          query: '',
+          term: { ...term, url: termUrl(base, term) },
+          posts: posts.map((p) => postView(base, p)),
+          count: posts.length,
+        }),
+      };
+    }
+
+    case 'document': {
+      const post = await getPublishedBySlug(db, route.slug);
+      if (!post) {
+        return {
+          kind: 'html',
+          status: 404,
+          mime: HTML_MIME,
+          body: compose(templates, 'notfound', 'Not found', { ...ctx, query: '', path }),
+        };
+      }
+      const terms = await termsForPost(db, post.id);
+      const view = postView(base, post, terms);
+      return {
+        kind: 'html',
+        status: 200,
+        mime: HTML_MIME,
+        body: compose(templates, post.type === 'page' ? 'page' : 'single', post.title, {
+          ...ctx,
+          query: '',
+          post: view,
+          terms: view.terms ?? [],
+        }),
+      };
+    }
+  }
+}
+
+/**
+ * Render a draft as if it were published — the admin's preview pane. Bypasses the status
+ * filter that renderPath deliberately applies, and never touches the route table.
+ */
+export async function renderPreview(
+  db: Db,
+  post: Post,
+  options: RenderOptions,
+): Promise<string> {
+  const templates = await loadTemplates(db);
+  const ctx = await siteContext(db, options);
+  const terms = await termsForPost(db, post.id);
+  const view = postView(options.base, post, terms);
+  return compose(templates, post.type === 'page' ? 'page' : 'single', post.title, {
+    ...ctx,
+    query: '',
+    post: view,
+    terms: view.terms ?? [],
+  });
+}
