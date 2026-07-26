@@ -11,8 +11,8 @@
       font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
 
     /* Admin on the left, the live site on the right. The frame is the point, so it gets the room. */
-    .shell { display:grid; grid-template-columns:minmax(380px,460px) 1fr; height:100vh; }
-    @media (max-width:1000px) { .shell { grid-template-columns:1fr; height:auto; } }
+    .shell { display:grid; grid-template-columns:minmax(400px,500px) 1fr; height:100vh; }
+    @media (max-width:1060px) { .shell { grid-template-columns:1fr; height:auto; } }
 
     .admin { border-right:1px solid #24272d; display:flex; flex-direction:column; min-height:0; }
     /* display:flex above outranks the UA stylesheet's [hidden]{display:none}, so hiding the
@@ -28,7 +28,7 @@
 
     .tabs { display:flex; gap:2px; padding:10px 12px 0; border-bottom:1px solid #24272d; }
     .tabs button { background:none; border:none; border-bottom:2px solid transparent; color:#8b93a0;
-      font:inherit; font-size:12px; font-weight:600; padding:7px 10px; cursor:pointer; text-transform:uppercase; letter-spacing:.05em; }
+      font:inherit; font-size:12px; font-weight:600; padding:7px 9px; cursor:pointer; text-transform:uppercase; letter-spacing:.05em; }
     .tabs button[aria-selected="true"] { color:#2dd4bf; border-bottom-color:#2dd4bf; }
 
     .panel { padding:16px 18px 40px; overflow-y:auto; flex:1; min-height:0; }
@@ -39,7 +39,6 @@
     input, textarea, select { width:100%; padding:8px 10px; border:1px solid #2a2e34; border-radius:7px;
       background:#0e1013; color:#e6e8eb; font:inherit; font-size:13px; }
     textarea { font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace; resize:vertical; }
-    #ed-body { min-height:190px; }
     #tpl-body { min-height:340px; }
     button { border:none; border-radius:7px; padding:8px 14px; font:inherit; font-size:13px; font-weight:600; cursor:pointer; white-space:nowrap; }
     button:disabled { opacity:.4; cursor:not-allowed; }
@@ -50,18 +49,26 @@
     .row.tight { margin-top:7px; }
     .grow { flex:1; min-width:0; }
     .two { display:grid; grid-template-columns:1fr 1fr; gap:7px; }
+    .mini { padding:4px 8px; font-size:11px; font-weight:600; }
 
     ul.list { list-style:none; margin:8px 0 0; padding:0; }
-    ul.list li { border-top:1px solid #24272d; padding:8px 2px; display:flex; gap:10px; align-items:baseline; }
+    ul.list li { border-top:1px solid #24272d; padding:8px 2px; display:flex; gap:8px; align-items:baseline; }
     ul.list li:hover { background:#101216; }
     ul.list button.open { background:none; border:none; color:#e6e8eb; font:inherit; font-size:13px;
       text-align:left; padding:0; cursor:pointer; flex:1; min-width:0; }
     ul.list button.open:hover { color:#2dd4bf; }
     ul.list .tag { font-size:10px; text-transform:uppercase; letter-spacing:.05em; color:#6b7280;
-      border:1px solid #2a2e34; border-radius:4px; padding:1px 5px; }
+      border:1px solid #2a2e34; border-radius:4px; padding:1px 5px; white-space:nowrap; }
     ul.list .tag.pub { color:#2dd4bf; border-color:#2dd4bf44; }
+    ul.list .tag.lock { color:#f59e0b; border-color:#f59e0b44; }
     ul.list .del { background:none; border:none; color:#4b5563; cursor:pointer; padding:0 2px; font-weight:400; }
     ul.list .del:hover { color:#f87171; }
+    /* The document list shows the hierarchy by indenting; depth comes from the tree walk. */
+    ul.list li.d1 { padding-left:16px; } ul.list li.d2 { padding-left:32px; }
+    ul.list li.d3 { padding-left:48px; } ul.list li.d4 { padding-left:64px; }
+    ul.list li.d1 button.open, ul.list li.d2 button.open,
+    ul.list li.d3 button.open, ul.list li.d4 button.open { color:#c7ccd3; font-size:12px; }
+
     .empty { color:#4b5563; font-size:12px; padding:9px 2px; font-style:italic; }
     .hint { color:#6b7280; font-size:12px; margin-top:8px; }
     .err { color:#f87171; font-size:12px; margin-top:8px; white-space:pre-wrap; }
@@ -69,6 +76,17 @@
     code { background:#1c1f24; padding:1px 5px; border-radius:4px; font-size:.87em;
       font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
     a { color:#2dd4bf; }
+    fieldset { border:1px solid #24272d; border-radius:9px; padding:10px 12px 14px; margin:16px 0 0; }
+    legend { font-size:10px; text-transform:uppercase; letter-spacing:.08em; color:#6b7280; padding:0 5px; }
+
+    /* Parts editor: one block per part. */
+    .part-edit { border:1px solid #24272d; border-radius:9px; padding:9px 10px; margin-top:8px; background:#0d0f12; }
+    .part-edit .bar { display:flex; gap:6px; align-items:center; }
+    .part-edit select.kind { width:auto; flex:1; font-size:12px; padding:5px 8px; }
+    .part-edit .anchor { width:auto; flex:1; font-size:11px; padding:5px 8px;
+      font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+    .part-edit textarea { min-height:96px; margin-top:6px; }
+    .part-edit .badinfo { color:#f59e0b; font-size:11px; margin-top:4px; }
 
     /* The site */
     .site { display:flex; flex-direction:column; min-width:0; min-height:0; }
@@ -79,7 +97,7 @@
       overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .site-bar button { padding:6px 10px; font-size:12px; }
     #site { flex:1; width:100%; border:none; background:#fff; min-height:520px; }
-    @media (max-width:1000px) { #site { min-height:70vh; } }
+    @media (max-width:1060px) { #site { min-height:70vh; } }
 
     .fatal { padding:24px; color:#f87171; white-space:pre-wrap;
       font:13px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace; }
@@ -91,12 +109,13 @@
     <section class="admin">
       <div class="admin-head">
         <h1>SQLite CMS</h1>
-        <div class="sub">Content, theme and media in one demand-paged database.</div>
+        <div class="sub">Documents, parts, relations and theme — one demand-paged database.</div>
         <div class="pills">
           <span class="pill" id="engine">booting…</span>
           <span class="pill" id="transport">transport…</span>
           <span class="pill" id="stat-pages">0 pages</span>
-          <span class="pill" id="stat-media">0 media</span>
+          <span class="pill" id="stat-parts">0 parts</span>
+          <span class="pill" id="stat-rel">0 links</span>
         </div>
       </div>
 
@@ -112,36 +131,104 @@
         <div class="row tight">
           <button class="primary" id="new-post">New post</button>
           <button class="ghost" id="new-page">New page</button>
+          <button class="ghost" id="new-child" disabled>New child</button>
         </div>
 
-        <h2 style="margin-top:20px">Posts &amp; pages</h2>
-        <ul class="list" id="post-list"></ul>
+        <h2 style="margin-top:20px">Documents</h2>
+        <ul class="list" id="doc-list"></ul>
 
         <div id="editor" hidden>
-          <h2 style="margin-top:24px">Editing <span id="ed-kind" class="ok"></span></h2>
-          <label for="ed-title">Title</label>
-          <input id="ed-title" autocomplete="off" />
-          <label for="ed-slug">Slug</label>
-          <input id="ed-slug" autocomplete="off" />
-          <label for="ed-body">Body (HTML — <code>&lt;script&gt;</code> runs)</label>
-          <textarea id="ed-body" spellcheck="false"></textarea>
-          <label for="ed-excerpt">Excerpt (optional — derived from the body if blank)</label>
-          <textarea id="ed-excerpt" style="min-height:54px" spellcheck="false"></textarea>
-          <div class="two">
-            <div>
-              <label for="ed-cats">Categories (comma-separated)</label>
-              <input id="ed-cats" autocomplete="off" />
+          <fieldset>
+            <legend>Document — <span id="ed-kind" class="ok"></span></legend>
+            <label for="ed-title">Title</label>
+            <input id="ed-title" autocomplete="off" />
+            <div class="two">
+              <div>
+                <label for="ed-slug">Slug</label>
+                <input id="ed-slug" autocomplete="off" />
+              </div>
+              <div>
+                <label for="ed-number">Number (as printed)</label>
+                <input id="ed-number" autocomplete="off" placeholder="e.g. 71A" />
+              </div>
             </div>
-            <div>
-              <label for="ed-tags">Tags (comma-separated)</label>
-              <input id="ed-tags" autocomplete="off" />
+            <label for="ed-subtitle">Subtitle</label>
+            <input id="ed-subtitle" autocomplete="off" />
+            <label for="ed-excerpt">Excerpt</label>
+            <textarea id="ed-excerpt" style="min-height:52px" spellcheck="false"></textarea>
+            <div class="two">
+              <div>
+                <label for="ed-cats">Categories (comma-separated)</label>
+                <input id="ed-cats" autocomplete="off" />
+              </div>
+              <div>
+                <label for="ed-tags">Tags (comma-separated)</label>
+                <input id="ed-tags" autocomplete="off" />
+              </div>
             </div>
-          </div>
-          <label for="ed-status">Status</label>
-          <select id="ed-status">
-            <option value="draft">Draft</option>
-            <option value="published">Published</option>
-          </select>
+            <div class="two">
+              <div>
+                <label for="ed-status">Status</label>
+                <select id="ed-status">
+                  <option value="draft">Draft</option>
+                  <option value="published">Published</option>
+                </select>
+              </div>
+              <div>
+                <label for="ed-visibility">Visibility</label>
+                <select id="ed-visibility">
+                  <option value="public">Public</option>
+                  <option value="protected">Protected</option>
+                </select>
+              </div>
+            </div>
+            <div class="two">
+              <div>
+                <label for="ed-collection">Collection</label>
+                <select id="ed-collection"></select>
+              </div>
+              <div>
+                <label for="ed-parent">Parent</label>
+                <select id="ed-parent"></select>
+              </div>
+            </div>
+            <div class="row tight">
+              <button class="ghost mini" id="up">↑ Move up</button>
+              <button class="ghost mini" id="down">↓ Move down</button>
+            </div>
+          </fieldset>
+
+          <fieldset>
+            <legend>Parts — <span id="parts-count" class="ok">0</span></legend>
+            <div class="hint" style="margin-top:0">
+              <code>kind</code> picks the widget renderer; the textarea is that renderer's JSON.
+            </div>
+            <div id="parts-list"></div>
+            <div class="row">
+              <select id="part-add-kind" class="grow"></select>
+              <button class="ghost" id="part-add">Add part</button>
+            </div>
+          </fieldset>
+
+          <fieldset>
+            <legend>Relations</legend>
+            <ul class="list" id="rel-list"></ul>
+            <div class="row">
+              <input id="rel-slug" class="grow" placeholder="slug of the other document" autocomplete="off" />
+              <select id="rel-type" style="width:auto">
+                <option value="see_also">see also</option>
+                <option value="supersedes">supersedes</option>
+                <option value="derived_from">derived from</option>
+                <option value="cross_reference">cross reference</option>
+                <option value="amends">amends</option>
+              </select>
+              <button class="ghost" id="rel-add">Link</button>
+            </div>
+            <div class="hint">
+              Authored links are <code>origin=manual</code> and survive a similarity recompute.
+            </div>
+          </fieldset>
+
           <div class="row">
             <button class="primary" id="save">Save</button>
             <button class="ghost" id="preview">Preview draft</button>
@@ -157,8 +244,8 @@
         <h2>Upload</h2>
         <input type="file" id="media-file" multiple />
         <div class="hint">
-          Bytes go into a <code>BLOB</code> column. Reference one in a post as
-          <code>&lt;img src="./media/<i>slug</i>"&gt;</code>.
+          Bytes go into a <code>BLOB</code> column. Reference one from a
+          <code>figure</code> or <code>video</code> part by its slug.
         </div>
         <h2 style="margin-top:22px">Library</h2>
         <ul class="list" id="media-list"></ul>
@@ -171,6 +258,7 @@
         <div class="hint">
           <code>{{x}}</code> escapes, <code>{{{x}}}</code> is raw,
           <code>{{#each xs}}…{{/each}}</code> and <code>{{#if x}}…{{else}}…{{/if}}</code> work.
+          <code>widget:*</code> rows render one part each.
         </div>
         <label for="tpl-name">Template</label>
         <select id="tpl-name"></select>
@@ -191,6 +279,22 @@
         <label for="set-tagline">Tagline</label>
         <input id="set-tagline" autocomplete="off" />
         <div class="row"><button class="primary" id="set-save">Save settings</button></div>
+
+        <fieldset>
+          <legend>Related entries — TF-IDF cosine</legend>
+          <div class="hint" style="margin-top:0">
+            Vectorizes the corpus in this tab and writes <code>similar</code> edges with a
+            confidence. Clears only <code>origin=tfidf</code>, so authored links are untouched.
+          </div>
+          <div class="row">
+            <select id="sim-scope" style="width:auto">
+              <option value="document">Whole documents</option>
+              <option value="part">Individual parts</option>
+            </select>
+            <button class="primary" id="sim-run">Recompute</button>
+          </div>
+          <div class="hint" id="sim-report">not run yet</div>
+        </fieldset>
 
         <h2 style="margin-top:26px">Database</h2>
         <div class="hint" id="db-stats">—</div>

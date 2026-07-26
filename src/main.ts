@@ -1,19 +1,43 @@
-// UI wiring only — every SQLite concern lives in db/schema/content/taxonomy/media/theme, and
-// every serving concern in render/transport.
+// UI wiring only — every SQLite concern lives in db/schema/documents/parts/relations/…, and every
+// serving concern in render/transport.
 import { openDatabase, type Db } from './db.js';
 import { migrate, pageStats } from './schema.js';
 import {
-  countPosts,
-  createPost,
-  deletePost,
-  getPost,
-  listPosts,
+  childrenOf,
+  createDocument,
+  deleteDocument,
+  getDocument,
+  getPublishedBySlug,
+  listOrdered,
+  reorder,
   slugify,
-  updatePost,
-  type Post,
-  type PostStatus,
-  type PostType,
-} from './content.js';
+  subtree,
+  updateDocument,
+  type Doc,
+  type DocumentStatus,
+  type DocumentType,
+  type Visibility,
+} from './documents.js';
+import { listCollections } from './collections.js';
+import {
+  addPart,
+  countParts,
+  deletePart,
+  listParts,
+  partData,
+  reorderPart,
+  updatePart,
+  type Part,
+} from './parts.js';
+import { BUILTIN_WIDGETS } from './widgets.js';
+import {
+  countRelations,
+  link,
+  relatedDocuments,
+  unlink,
+  type RelationType,
+} from './relations.js';
+import { computeSimilar } from './similarity.js';
 import {
   addMediaFile,
   countMedia,
@@ -22,16 +46,9 @@ import {
   listMedia,
   type MediaRow,
 } from './media.js';
-import { parseTermList, pruneOrphanTerms, setPostTerms, termsForPost } from './taxonomy.js';
+import { parseTermList, pruneOrphanTerms, setDocumentTerms, termsForDocument } from './taxonomy.js';
 import { getSetting, seedSettings, setSetting } from './settings.js';
-import {
-  DEFAULT_TEMPLATES,
-  TEMPLATE_ORDER,
-  getTemplate,
-  seedTheme,
-  setTemplate,
-  type TemplateName,
-} from './theme.js';
+import { DEFAULT_TEMPLATES, TEMPLATE_ORDER, getTemplate, seedTheme, setTemplate } from './theme.js';
 import { renderPreview } from './render.js';
 import { contentBase, createTransport, isSitePath, type Transport } from './transport.js';
 import { seedContent } from './seed.js';
@@ -49,7 +66,8 @@ const ui = {
   engine: el('engine'),
   transport: el('transport'),
   statPages: el('stat-pages'),
-  statMedia: el('stat-media'),
+  statParts: el('stat-parts'),
+  statRel: el('stat-rel'),
 
   tabs: {
     content: el<HTMLButtonElement>('tab-content'),
@@ -66,16 +84,35 @@ const ui = {
 
   newPost: el<HTMLButtonElement>('new-post'),
   newPage: el<HTMLButtonElement>('new-page'),
-  postList: el<HTMLUListElement>('post-list'),
+  newChild: el<HTMLButtonElement>('new-child'),
+  docList: el<HTMLUListElement>('doc-list'),
+
   editor: el('editor'),
   edKind: el('ed-kind'),
   edTitle: el<HTMLInputElement>('ed-title'),
   edSlug: el<HTMLInputElement>('ed-slug'),
-  edBody: el<HTMLTextAreaElement>('ed-body'),
+  edNumber: el<HTMLInputElement>('ed-number'),
+  edSubtitle: el<HTMLInputElement>('ed-subtitle'),
   edExcerpt: el<HTMLTextAreaElement>('ed-excerpt'),
   edCats: el<HTMLInputElement>('ed-cats'),
   edTags: el<HTMLInputElement>('ed-tags'),
   edStatus: el<HTMLSelectElement>('ed-status'),
+  edVisibility: el<HTMLSelectElement>('ed-visibility'),
+  edCollection: el<HTMLSelectElement>('ed-collection'),
+  edParent: el<HTMLSelectElement>('ed-parent'),
+  up: el<HTMLButtonElement>('up'),
+  down: el<HTMLButtonElement>('down'),
+
+  partsList: el('parts-list'),
+  partsCount: el('parts-count'),
+  partAddKind: el<HTMLSelectElement>('part-add-kind'),
+  partAdd: el<HTMLButtonElement>('part-add'),
+
+  relList: el<HTMLUListElement>('rel-list'),
+  relSlug: el<HTMLInputElement>('rel-slug'),
+  relType: el<HTMLSelectElement>('rel-type'),
+  relAdd: el<HTMLButtonElement>('rel-add'),
+
   save: el<HTMLButtonElement>('save'),
   preview: el<HTMLButtonElement>('preview'),
   view: el<HTMLButtonElement>('view'),
@@ -95,6 +132,9 @@ const ui = {
   setTitle: el<HTMLInputElement>('set-title'),
   setTagline: el<HTMLInputElement>('set-tagline'),
   setSave: el<HTMLButtonElement>('set-save'),
+  simScope: el<HTMLSelectElement>('sim-scope'),
+  simRun: el<HTMLButtonElement>('sim-run'),
+  simReport: el('sim-report'),
   dbStats: el('db-stats'),
   dbReseed: el<HTMLButtonElement>('db-reseed'),
   dbWipe: el<HTMLButtonElement>('db-wipe'),
@@ -127,13 +167,13 @@ async function show(path: string, pushHistory = true): Promise<void> {
   shownPath = path;
   await transport.show(path);
 
-  const link = transport.linkFor(path);
-  ui.siteUrl.textContent = link ?? `${path}  (blob: — nothing to share from a file)`;
-  ui.siteCopy.disabled = !link;
-  ui.siteOpen.disabled = !link;
+  const shareable = transport.linkFor(path);
+  ui.siteUrl.textContent = shareable ?? `${path}  (blob: — nothing to share from a file)`;
+  ui.siteCopy.disabled = !shareable;
+  ui.siteOpen.disabled = !shareable;
 
-  // Only when a Service Worker is serving real URLs is there anything to put in the address
-  // bar; pushState to a different path from a file:// document throws.
+  // Only when a Service Worker is serving real URLs is there anything to put in the address bar;
+  // pushState to a different path from a file:// document throws.
   if (pushHistory && transport.mode === 'sw' && location.pathname + location.search !== path) {
     history.pushState(null, '', path);
   }
@@ -146,8 +186,7 @@ function wireFrameBridge(): void {
     if (data.type === 'cms:navigate' && typeof data.href === 'string') {
       void show(resolveHref(data.href, transport.base));
     } else if (data.type === 'cms:search') {
-      const q = encodeURIComponent(data.q ?? '');
-      void show(`${transport.base}search/?q=${q}`);
+      void show(`${transport.base}search/?q=${encodeURIComponent(data.q ?? '')}`);
     }
   });
 
@@ -159,84 +198,338 @@ function wireFrameBridge(): void {
 }
 
 // ------------------------------------------------------------------------------------------- //
-// content
+// document list (the hierarchy)
 // ------------------------------------------------------------------------------------------- //
 
-function postRow(post: Post): HTMLLIElement {
+function docRow(doc: Doc, depth: number): HTMLLIElement {
   const li = document.createElement('li');
+  if (depth > 0) li.className = `d${Math.min(depth, 4)}`;
 
   const open = document.createElement('button');
   open.className = 'open';
-  open.textContent = post.title || '(untitled)';
-  open.addEventListener('click', () => void edit(post.id));
+  open.textContent = doc.number ? `${doc.number} · ${doc.title || '(untitled)'}` : doc.title || '(untitled)';
+  open.addEventListener('click', () => void edit(doc.id));
 
   const kind = document.createElement('span');
   kind.className = 'tag';
-  kind.textContent = post.type;
+  kind.textContent = doc.type;
 
   const status = document.createElement('span');
-  status.className = post.status === 'published' ? 'tag pub' : 'tag';
-  status.textContent = post.status === 'published' ? 'live' : 'draft';
+  status.className = doc.status === 'published' ? 'tag pub' : 'tag';
+  status.textContent = doc.status === 'published' ? 'live' : 'draft';
 
   const remove = document.createElement('button');
   remove.className = 'del';
   remove.textContent = '✕';
-  remove.title = 'delete';
+  remove.title = 'delete (with its subtree)';
   remove.addEventListener('click', async () => {
-    if (!confirm(`Delete “${post.title}”?`)) return;
-    await deletePost(db, post.id);
+    const kids = await childrenOf(db, doc.id);
+    const warning = kids.length
+      ? `Delete “${doc.title}” and its ${kids.length} child document(s)?`
+      : `Delete “${doc.title}”?`;
+    if (!confirm(warning)) return;
+    await deleteDocument(db, doc.id);
     await pruneOrphanTerms(db);
-    if (editingId === post.id) closeEditor();
+    if (editingId === doc.id) closeEditor();
     await refreshAll();
+    await show(shownPath, false);
   });
 
-  li.append(open, kind, status, remove);
+  li.append(open, kind, status);
+  if (doc.visibility === 'protected') {
+    const lock = document.createElement('span');
+    lock.className = 'tag lock';
+    lock.textContent = 'sealed';
+    li.append(lock);
+  }
+  li.append(remove);
   return li;
 }
+
+async function refreshDocList(): Promise<void> {
+  // The whole tree in one pass, then flattened for display — one query, not one per node.
+  const roots = await subtree(db, 0);
+  ui.docList.replaceChildren();
+  if (!roots.length) {
+    const li = document.createElement('li');
+    li.className = 'empty';
+    li.textContent = 'nothing here yet';
+    ui.docList.append(li);
+    return;
+  }
+  const walk = (nodes: typeof roots): void => {
+    for (const node of nodes) {
+      ui.docList.append(docRow(node, node.depth));
+      walk(node.children);
+    }
+  };
+  walk(roots);
+}
+
+// ------------------------------------------------------------------------------------------- //
+// parts editor
+// ------------------------------------------------------------------------------------------- //
+
+/**
+ * One editable block per part: kind, anchor, and the payload as JSON.
+ *
+ * The payload is edited as raw JSON on purpose. A bespoke form per widget kind would have to be
+ * written again for every kind anybody adds, and kinds are meant to be cheap — a template row and
+ * nothing else. Invalid JSON is reported inline and refuses to save rather than being coerced.
+ */
+function partBlock(part: Part): HTMLDivElement {
+  const box = document.createElement('div');
+  box.className = 'part-edit';
+  box.dataset.partId = String(part.id);
+
+  const bar = document.createElement('div');
+  bar.className = 'bar';
+
+  const kind = document.createElement('select');
+  kind.className = 'kind';
+  const kinds = [...new Set([...BUILTIN_WIDGETS, part.kind])];
+  for (const name of kinds) {
+    const option = document.createElement('option');
+    option.value = name;
+    option.textContent = name;
+    kind.append(option);
+  }
+  kind.value = part.kind;
+
+  const anchor = document.createElement('input');
+  anchor.className = 'anchor';
+  anchor.value = part.anchor;
+  anchor.title = 'fragment id — this part’s own URL';
+
+  const up = document.createElement('button');
+  up.className = 'ghost mini';
+  up.textContent = '↑';
+  up.addEventListener('click', async () => {
+    await reorderPart(db, part.id, -1);
+    await refreshParts();
+  });
+
+  const down = document.createElement('button');
+  down.className = 'ghost mini';
+  down.textContent = '↓';
+  down.addEventListener('click', async () => {
+    await reorderPart(db, part.id, 1);
+    await refreshParts();
+  });
+
+  const remove = document.createElement('button');
+  remove.className = 'danger mini';
+  remove.textContent = '✕';
+  remove.addEventListener('click', async () => {
+    if (!confirm('Delete this part?')) return;
+    await deletePart(db, part.id);
+    await refreshParts();
+    await refreshStats();
+    await show(shownPath, false);
+  });
+
+  bar.append(kind, anchor, up, down, remove);
+
+  const data = document.createElement('textarea');
+  data.className = 'data';
+  data.spellcheck = false;
+  data.value = JSON.stringify(partData(part), null, 2);
+
+  const bad = document.createElement('div');
+  bad.className = 'badinfo';
+  bad.hidden = true;
+
+  // Validate as you type so a JSON typo is visible before Save is pressed.
+  data.addEventListener('input', () => {
+    try {
+      JSON.parse(data.value);
+      bad.hidden = true;
+    } catch (err) {
+      bad.textContent = err instanceof Error ? err.message : 'invalid JSON';
+      bad.hidden = false;
+    }
+  });
+
+  box.append(bar, data, bad);
+  return box;
+}
+
+async function refreshParts(): Promise<void> {
+  ui.partsList.replaceChildren();
+  if (editingId === undefined) return;
+  const parts = await listParts(db, editingId);
+  ui.partsCount.textContent = String(parts.length);
+  if (!parts.length) {
+    const empty = document.createElement('div');
+    empty.className = 'empty';
+    empty.textContent = 'no parts yet — add one below';
+    ui.partsList.append(empty);
+    return;
+  }
+  for (const part of parts) ui.partsList.append(partBlock(part));
+}
+
+/** Persist every part block. Throws on the first invalid payload, naming which one. */
+async function savePartBlocks(): Promise<void> {
+  const blocks = Array.from(ui.partsList.querySelectorAll<HTMLDivElement>('.part-edit'));
+  for (const [index, box] of blocks.entries()) {
+    const id = Number(box.dataset.partId);
+    const kind = box.querySelector<HTMLSelectElement>('select.kind')?.value ?? 'prose';
+    const anchor = box.querySelector<HTMLInputElement>('input.anchor')?.value.trim() ?? '';
+    const raw = box.querySelector<HTMLTextAreaElement>('textarea.data')?.value ?? '{}';
+    let data: Record<string, unknown>;
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new Error('payload must be a JSON object');
+      }
+      data = parsed as Record<string, unknown>;
+    } catch (err) {
+      throw new Error(
+        `part ${index + 1} (${kind}): ${err instanceof Error ? err.message : 'invalid JSON'}`,
+      );
+    }
+    await updatePart(db, id, { kind, data, anchor: anchor || undefined });
+  }
+}
+
+// ------------------------------------------------------------------------------------------- //
+// relations
+// ------------------------------------------------------------------------------------------- //
+
+async function refreshRelations(): Promise<void> {
+  ui.relList.replaceChildren();
+  if (editingId === undefined) return;
+  const related = await relatedDocuments(db, editingId, { limit: 30 });
+  if (!related.length) {
+    const li = document.createElement('li');
+    li.className = 'empty';
+    li.textContent = 'no links yet — add one, or recompute similarity in Settings';
+    ui.relList.append(li);
+    return;
+  }
+  for (const row of related) {
+    const li = document.createElement('li');
+
+    const open = document.createElement('button');
+    open.className = 'open';
+    open.textContent = row.title;
+    open.addEventListener('click', () => void edit(row.id));
+
+    const type = document.createElement('span');
+    type.className = 'tag';
+    type.textContent = row.relation.replace(/_/g, ' ');
+
+    const origin = document.createElement('span');
+    origin.className = 'tag';
+    origin.textContent = row.origin === 'tfidf' ? row.confidence.toFixed(2) : 'manual';
+
+    const remove = document.createElement('button');
+    remove.className = 'del';
+    remove.textContent = '✕';
+    remove.addEventListener('click', async () => {
+      if (editingId === undefined) return;
+      await unlink(db, editingId, row.id, row.relation);
+      await refreshRelations();
+      await refreshStats();
+    });
+
+    li.append(open, type, origin, remove);
+    ui.relList.append(li);
+  }
+}
+
+// ------------------------------------------------------------------------------------------- //
+// editor
+// ------------------------------------------------------------------------------------------- //
 
 function closeEditor(): void {
   editingId = undefined;
   ui.editor.hidden = true;
+  ui.newChild.disabled = true;
 }
 
-async function refreshPostList(): Promise<void> {
-  const posts = await listPosts(db);
-  ui.postList.replaceChildren();
-  if (!posts.length) {
-    const li = document.createElement('li');
-    li.className = 'empty';
-    li.textContent = 'nothing here yet';
-    ui.postList.append(li);
-    return;
+/** Fill the collection and parent pickers. Parent excludes the document's own subtree. */
+async function fillPickers(current: Doc): Promise<void> {
+  const collections = await listCollections(db);
+  ui.edCollection.replaceChildren();
+  const none = document.createElement('option');
+  none.value = '0';
+  none.textContent = '(none)';
+  ui.edCollection.append(none);
+  for (const collection of collections) {
+    const option = document.createElement('option');
+    option.value = String(collection.id);
+    option.textContent = `${collection.title} (${collection.kind})`;
+    ui.edCollection.append(option);
   }
-  for (const post of posts) ui.postList.append(postRow(post));
+  ui.edCollection.value = String(current.collection_id);
+
+  // Descendants are excluded because re-parenting into your own subtree is a cycle; the model
+  // rejects it, but offering it in a dropdown is a trap.
+  const descendants = new Set<number>();
+  const collect = (nodes: Awaited<ReturnType<typeof subtree>>): void => {
+    for (const node of nodes) {
+      descendants.add(node.id);
+      collect(node.children);
+    }
+  };
+  collect(await subtree(db, current.id));
+
+  const all = await listOrdered(db, { limit: 2000 });
+  ui.edParent.replaceChildren();
+  const top = document.createElement('option');
+  top.value = '0';
+  top.textContent = '(top level)';
+  ui.edParent.append(top);
+  for (const doc of all) {
+    if (doc.id === current.id || descendants.has(doc.id)) continue;
+    const option = document.createElement('option');
+    option.value = String(doc.id);
+    option.textContent = `${doc.type}: ${doc.title}`;
+    ui.edParent.append(option);
+  }
+  ui.edParent.value = String(current.parent_id);
 }
 
 async function edit(id: number): Promise<void> {
-  const post = await getPost(db, id);
-  if (!post) return;
+  const doc = await getDocument(db, id);
+  if (!doc) return;
   editingId = id;
-  const terms = await termsForPost(db, id);
+  const terms = await termsForDocument(db, id);
 
-  ui.edKind.textContent = post.type;
-  ui.edTitle.value = post.title;
-  ui.edSlug.value = post.slug;
-  ui.edBody.value = post.body;
-  ui.edExcerpt.value = post.excerpt;
+  ui.edKind.textContent = doc.type;
+  ui.edTitle.value = doc.title;
+  ui.edSlug.value = doc.slug;
+  ui.edNumber.value = doc.number;
+  ui.edSubtitle.value = doc.subtitle;
+  ui.edExcerpt.value = doc.excerpt;
   ui.edCats.value = terms.filter((t) => t.kind === 'category').map((t) => t.name).join(', ');
   ui.edTags.value = terms.filter((t) => t.kind === 'tag').map((t) => t.name).join(', ');
-  ui.edStatus.value = post.status;
+  ui.edStatus.value = doc.status;
+  ui.edVisibility.value = doc.visibility;
+  await fillPickers(doc);
+
   ui.edErr.hidden = true;
   ui.editor.hidden = false;
-  ui.editor.scrollIntoView({ block: 'nearest' });
+  ui.newChild.disabled = false;
+  await refreshParts();
+  await refreshRelations();
 }
 
-async function create(type: PostType): Promise<void> {
-  const id = await createPost(db, {
+async function create(type: DocumentType, parentId = 0): Promise<void> {
+  const parent = parentId ? await getDocument(db, parentId) : undefined;
+  const id = await createDocument(db, {
     type,
-    title: type === 'page' ? 'New page' : 'New post',
-    body: '<p>Write something.</p>',
+    title: type === 'page' ? 'New page' : type === 'post' ? 'New post' : 'New section',
     status: 'draft',
+    parentId,
+    collectionId: parent?.collection_id ?? 0,
+  });
+  await addPart(db, id, {
+    kind: 'prose',
+    anchor: 'body',
+    data: { html: '<p>Write something.</p>' },
   });
   await refreshAll();
   await edit(id);
@@ -246,25 +539,34 @@ async function saveEditor(): Promise<void> {
   if (editingId === undefined) return;
   ui.edErr.hidden = true;
   try {
+    // Parts first: if a payload is malformed the document is left untouched, so a failed save
+    // does not half-apply.
+    await savePartBlocks();
+
     const title = ui.edTitle.value.trim() || 'Untitled';
     // An emptied slug field means "derive it from the title", as WordPress does.
     const slug = ui.edSlug.value.trim() || slugify(title);
-    await updatePost(db, editingId, {
+    await updateDocument(db, editingId, {
       title,
       slug,
-      body: ui.edBody.value,
+      number: ui.edNumber.value.trim(),
+      subtitle: ui.edSubtitle.value.trim(),
       excerpt: ui.edExcerpt.value.trim(),
-      status: ui.edStatus.value as PostStatus,
+      status: ui.edStatus.value as DocumentStatus,
+      visibility: ui.edVisibility.value as Visibility,
+      collectionId: Number(ui.edCollection.value),
+      parentId: Number(ui.edParent.value),
     });
-    await setPostTerms(db, editingId, 'category', parseTermList(ui.edCats.value));
-    await setPostTerms(db, editingId, 'tag', parseTermList(ui.edTags.value));
+    await setDocumentTerms(db, editingId, 'category', parseTermList(ui.edCats.value));
+    await setDocumentTerms(db, editingId, 'tag', parseTermList(ui.edTags.value));
     await pruneOrphanTerms(db);
 
-    const saved = await getPost(db, editingId);
+    const saved = await getDocument(db, editingId);
     if (saved) ui.edSlug.value = saved.slug; // may have been de-duplicated
 
     await refreshAll();
-    // Show the result: the post itself if it is live, otherwise re-render what was on screen.
+    await refreshParts();
+    // Show the result: the document itself if it is live, otherwise re-render what was on screen.
     if (saved && saved.status === 'published') {
       await show(`${transport.base}${encodeURIComponent(saved.slug)}/`);
     } else {
@@ -296,7 +598,6 @@ function mediaRow(row: MediaRow): HTMLLIElement {
   const remove = document.createElement('button');
   remove.className = 'del';
   remove.textContent = '✕';
-  remove.title = 'delete';
   remove.addEventListener('click', async () => {
     if (!confirm(`Delete ${row.slug}?`)) return;
     await deleteMedia(db, row.id);
@@ -336,30 +637,34 @@ async function upload(files: FileList): Promise<void> {
 // theme + settings
 // ------------------------------------------------------------------------------------------- //
 
-const currentTemplate = (): TemplateName => ui.tplName.value as TemplateName;
-
 async function loadTemplateIntoEditor(): Promise<void> {
-  ui.tplBody.value = await getTemplate(db, currentTemplate());
+  ui.tplBody.value = await getTemplate(db, ui.tplName.value);
   ui.tplErr.hidden = true;
 }
 
 async function refreshStats(): Promise<void> {
   const stats = await pageStats(db);
   const media = await countMedia(db);
-  const posts = await countPosts(db);
+  const parts = await countParts(db);
+  const relations = await countRelations(db);
   ui.statPages.textContent = `${stats.pages} pages`;
-  ui.statMedia.textContent = `${media.items} media`;
+  ui.statParts.textContent = `${parts} parts`;
+  ui.statRel.textContent = `${relations.total} links`;
   ui.dbStats.textContent =
-    `${posts} documents · ${media.items} media (${formatBytes(media.bytes)}) · ` +
-    `${stats.pages} × ${stats.pageSize} B pages = ` +
-    `${formatBytes(stats.pages * stats.pageSize)} in IndexedDB`;
+    `${parts} parts · ${media.items} media (${formatBytes(media.bytes)}) · ` +
+    `${relations.total} relations (${relations.computed} computed) · ` +
+    `${stats.pages} × ${stats.pageSize} B = ${formatBytes(stats.pages * stats.pageSize)} in IndexedDB`;
 }
 
 async function wipeEverything(): Promise<void> {
-  // Order matters only for readability; there are no foreign keys declared.
-  await db.exec(`DELETE FROM post_terms;
+  await db.exec(`DELETE FROM document_terms;
                  DELETE FROM terms;
-                 DELETE FROM posts;
+                 DELETE FROM parts;
+                 DELETE FROM relations;
+                 DELETE FROM document_keys;
+                 DELETE FROM recipients;
+                 DELETE FROM documents;
+                 DELETE FROM collections;
                  DELETE FROM media;
                  DELETE FROM settings;
                  DELETE FROM templates;`);
@@ -375,7 +680,7 @@ async function wipeEverything(): Promise<void> {
 async function refreshAll(): Promise<void> {
   // Sequential on purpose. db.query() serializes anyway, but reading it as a sequence keeps the
   // single-connection constraint visible at the call site.
-  await refreshPostList();
+  await refreshDocList();
   await refreshMedia();
   await refreshStats();
 }
@@ -395,34 +700,78 @@ function wire(): void {
 
   ui.newPost.addEventListener('click', () => void create('post'));
   ui.newPage.addEventListener('click', () => void create('page'));
+  ui.newChild.addEventListener('click', () => {
+    if (editingId !== undefined) void create('section', editingId);
+  });
   ui.save.addEventListener('click', () => void saveEditor());
+
+  ui.up.addEventListener('click', async () => {
+    if (editingId === undefined) return;
+    await reorder(db, editingId, -1);
+    await refreshDocList();
+    await show(shownPath, false);
+  });
+  ui.down.addEventListener('click', async () => {
+    if (editingId === undefined) return;
+    await reorder(db, editingId, 1);
+    await refreshDocList();
+    await show(shownPath, false);
+  });
+
+  ui.partAdd.addEventListener('click', async () => {
+    if (editingId === undefined) return;
+    const kind = ui.partAddKind.value;
+    // A payload skeleton per kind would be another registry to maintain; an empty object renders
+    // as an empty widget, which is a clear enough prompt to fill it in.
+    await addPart(db, editingId, { kind, data: {} });
+    await refreshParts();
+    await refreshStats();
+  });
+
+  ui.relAdd.addEventListener('click', async () => {
+    if (editingId === undefined) return;
+    ui.edErr.hidden = true;
+    const slug = ui.relSlug.value.trim();
+    if (!slug) return;
+    const target = await getPublishedBySlug(db, slug);
+    if (!target) {
+      ui.edErr.textContent = `no published document with slug “${slug}”`;
+      ui.edErr.hidden = false;
+      return;
+    }
+    await link(db, editingId, target.id, { type: ui.relType.value as RelationType });
+    ui.relSlug.value = '';
+    await refreshRelations();
+    await refreshStats();
+    await show(shownPath, false);
+  });
 
   ui.preview.addEventListener('click', async () => {
     if (editingId === undefined) return;
-    const post = await getPost(db, editingId);
-    if (!post) return;
+    const doc = await getDocument(db, editingId);
+    if (!doc) return;
     // Preview renders the *saved* row, drafts included — the bypass renderPath will not do.
-    const html = await renderPreview(db, post, {
+    const html = await renderPreview(db, doc, {
       base: transport.base,
       transport: `${transport.label} · draft preview`,
     });
     await transport.showHtml(html);
-    ui.siteUrl.textContent = `draft preview: ${post.slug}`;
+    ui.siteUrl.textContent = `draft preview: ${doc.slug}`;
     ui.siteCopy.disabled = true;
     ui.siteOpen.disabled = true;
   });
 
   ui.view.addEventListener('click', async () => {
     if (editingId === undefined) return;
-    const post = await getPost(db, editingId);
-    if (post) await show(`${transport.base}${encodeURIComponent(post.slug)}/`);
+    const doc = await getDocument(db, editingId);
+    if (doc) await show(`${transport.base}${encodeURIComponent(doc.slug)}/`);
   });
 
   ui.del.addEventListener('click', async () => {
     if (editingId === undefined) return;
-    const post = await getPost(db, editingId);
-    if (!post || !confirm(`Delete “${post.title}”?`)) return;
-    await deletePost(db, post.id);
+    const doc = await getDocument(db, editingId);
+    if (!doc || !confirm(`Delete “${doc.title}” and everything under it?`)) return;
+    await deleteDocument(db, doc.id);
     await pruneOrphanTerms(db);
     closeEditor();
     await refreshAll();
@@ -438,7 +787,7 @@ function wire(): void {
   ui.tplSave.addEventListener('click', async () => {
     ui.tplErr.hidden = true;
     try {
-      await setTemplate(db, currentTemplate(), ui.tplBody.value);
+      await setTemplate(db, ui.tplName.value, ui.tplBody.value);
       await show(shownPath, false);
     } catch (err) {
       ui.tplErr.textContent = err instanceof Error ? err.message : String(err);
@@ -446,8 +795,8 @@ function wire(): void {
     }
   });
   ui.tplReset.addEventListener('click', async () => {
-    ui.tplBody.value = DEFAULT_TEMPLATES[currentTemplate()];
-    await setTemplate(db, currentTemplate(), ui.tplBody.value);
+    ui.tplBody.value = DEFAULT_TEMPLATES[ui.tplName.value] ?? '';
+    await setTemplate(db, ui.tplName.value, ui.tplBody.value);
     await show(shownPath, false);
   });
 
@@ -455,6 +804,25 @@ function wire(): void {
     await setSetting(db, 'site.title', ui.setTitle.value.trim());
     await setSetting(db, 'site.tagline', ui.setTagline.value.trim());
     await show(shownPath, false);
+  });
+
+  ui.simRun.addEventListener('click', async () => {
+    ui.simRun.disabled = true;
+    ui.simReport.textContent = 'vectorizing…';
+    try {
+      const report = await computeSimilar(db, {
+        scope: ui.simScope.value === 'part' ? 'part' : 'document',
+      });
+      ui.simReport.textContent =
+        `${report.items} ${report.scope}(s) vectorized → ${report.edges} similar edge(s)`;
+      await refreshStats();
+      await refreshRelations();
+      await show(shownPath, false);
+    } catch (err) {
+      ui.simReport.textContent = err instanceof Error ? err.message : String(err);
+    } finally {
+      ui.simRun.disabled = false;
+    }
   });
 
   ui.dbReseed.addEventListener('click', async () => {
@@ -475,15 +843,15 @@ function wire(): void {
   ui.siteHome.addEventListener('click', () => void show(transport.base));
   ui.siteReload.addEventListener('click', () => void show(shownPath, false));
   ui.siteCopy.addEventListener('click', async () => {
-    const link = transport.linkFor(shownPath);
-    if (!link) return;
-    await navigator.clipboard?.writeText(link);
+    const shareable = transport.linkFor(shownPath);
+    if (!shareable) return;
+    await navigator.clipboard?.writeText(shareable);
     ui.siteCopy.textContent = 'Copied';
     setTimeout(() => (ui.siteCopy.textContent = 'Copy link'), 1200);
   });
   ui.siteOpen.addEventListener('click', () => {
-    const link = transport.linkFor(shownPath);
-    if (link) open(link, '_blank');
+    const shareable = transport.linkFor(shownPath);
+    if (shareable) open(shareable, '_blank');
   });
 }
 
@@ -521,6 +889,13 @@ async function boot(): Promise<void> {
     ui.tplName.append(option);
   }
   await loadTemplateIntoEditor();
+
+  for (const kind of BUILTIN_WIDGETS) {
+    const option = document.createElement('option');
+    option.value = kind;
+    option.textContent = kind;
+    ui.partAddKind.append(option);
+  }
 
   ui.setTitle.value = await getSetting(db, 'site.title');
   ui.setTagline.value = await getSetting(db, 'site.tagline');

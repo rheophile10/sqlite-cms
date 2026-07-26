@@ -90,6 +90,13 @@ async function editorReady(page, title) {
     title,
     { timeout: 30_000 },
   );
+  // The parts list is populated by a second async pass after the document fields. Without
+  // waiting for it, `.part-edit` locators resolve against blocks that are about to be replaced.
+  await page.waitForFunction(
+    () => (document.querySelector('#parts-list')?.children.length ?? 0) > 0,
+    undefined,
+    { timeout: 30_000 },
+  );
 }
 
 /** Click "New post"/"New page" and wait for its blank record to be loaded for editing. */
@@ -100,8 +107,18 @@ async function newDocument(page, selector, defaultTitle) {
 
 /** Open an existing document from the admin list and wait for it to load. */
 async function openDocument(page, title) {
-  await page.locator('#post-list button.open', { hasText: title }).click();
+  await page.locator('#doc-list button.open', { hasText: title }).click();
   await editorReady(page, title);
+}
+
+/**
+ * Overwrite the first part's payload. v2 documents have no body field — content is a list of
+ * parts, each edited as its renderer's JSON — so "type a body" means writing that JSON.
+ */
+async function setBody(page, html) {
+  const box = page.locator('#parts-list .part-edit').first();
+  await box.locator('textarea.data').waitFor({ timeout: 30_000 });
+  await box.locator('textarea.data').fill(JSON.stringify({ html }, null, 2));
 }
 
 /**
@@ -111,7 +128,7 @@ async function openDocument(page, title) {
  */
 async function saveDocument(page, title) {
   await page.click('#save');
-  await page.locator('#post-list button.open', { hasText: title }).first().waitFor({ timeout: 30_000 });
+  await page.locator('#doc-list button.open', { hasText: title }).first().waitFor({ timeout: 30_000 });
 }
 
 /** A loaded <img> inside the frame, as {src, width}. Fails if it never decoded. */
@@ -218,14 +235,17 @@ test('file://: FTS5 search runs from inside the rendered page', async () => {
   const { page, context, errors } = await openShell(FILE_URL);
   await siteFrame(page);
 
-  await page.frameLocator('#site').locator('input[name=q]').fill('paging');
+  // 'pager' is in the prose of a part. 'paging' would only match a *title* — FTS5 tokenizes
+  // "demand-paged" as demand+paged, so a prefix query for paging* misses the body entirely.
+  await page.frameLocator('#site').locator('input[name=q]').fill('pager');
   await page.frameLocator('#site').locator('input[name=q]').press('Enter');
   await waitForTitle(page, /Search/);
 
   const frame = await siteFrame(page);
   const body = await frame.textContent('body');
-  assert.match(body, /result\(s\) for/);
-  assert.match(body, /Demand paging, illustrated/);
+  assert.match(body, /passage\(s\) for/);
+  assert.doesNotMatch(body, /^0 passage/, 'expected at least one passage hit');
+  assert.match(body, /Demand paging, illustrated/, 'the containing document should be named');
   // Snippets come back with the match wrapped in <mark>.
   assert.ok(await frame.$('mark'), 'expected a highlighted snippet');
 
@@ -246,7 +266,7 @@ test('file://: an edit in the admin changes what the site serves, and survives a
   // A new post, published, appears on the site index.
   await newDocument(page, '#new-post', 'New post');
   await page.fill('#ed-title', 'Second Post');
-  await page.fill('#ed-body', '<p>body of the second post</p>');
+  await setBody(page, '<p>body of the second post</p>');
   await page.selectOption('#ed-status', 'published');
   await page.click('#save');
   await waitForTitle(page, /Second Post/);
@@ -272,7 +292,7 @@ test('file://: a draft is previewable but not reachable as a page', async () => 
 
   await newDocument(page, '#new-post', 'New post');
   await page.fill('#ed-title', 'Unpublished Thing');
-  await page.fill('#ed-body', '<p>draft body here</p>');
+  await setBody(page, '<p>draft body here</p>');
   await saveDocument(page, 'Unpublished Thing'); // stays a draft
 
   // Preview renders it anyway.
@@ -446,5 +466,142 @@ test('http: a genuine 404 is not bounced anywhere', async () => {
   assert.equal(response.status(), 404);
   assert.match(await page.textContent('body'), /404/);
   assert.equal(new URL(page.url()).pathname, '/not-a-thing.txt', 'should stay put');
+  await context.close();
+});
+
+test('file://: a search result deep-links to the part it matched', async () => {
+  const { page, context, errors } = await openShell(FILE_URL);
+  await siteFrame(page);
+
+  // "ordinal" appears in one passage of one section of the seeded handbook.
+  await page.frameLocator('#site').locator('input[name=q]').fill('ordinal');
+  await page.frameLocator('#site').locator('input[name=q]').press('Enter');
+  await waitForTitle(page, /Search/);
+
+  const frame = await siteFrame(page);
+  assert.match(await frame.textContent('body'), /passage\(s\) for/);
+  assert.ok(await frame.$('mark'), 'expected a highlighted snippet');
+
+  // Following the hit lands on the part on its own, not the whole entry.
+  await page.frameLocator('#site').locator('.postlist.passages .excerpt a').first().click();
+  await page.frameLocator('#site').locator('.standalone-part').waitFor({ timeout: 30_000 });
+  const part = await siteFrame(page);
+  assert.match(await part.textContent('body'), /Read the whole entry/);
+
+  assert.deepEqual(errors, []);
+  await context.close();
+});
+
+test('file://: the hierarchy renders as a table of contents and breadcrumbs', async () => {
+  const { page, context, errors } = await openShell(FILE_URL);
+  await siteFrame(page);
+
+  // The seeded book is in the nav as a collection.
+  await page.frameLocator('#site').getByRole('link', { name: 'The Very Short Handbook' }).first().click();
+  await page.frameLocator('#site').locator('.toc').waitFor({ timeout: 30_000 });
+
+  const toc = await siteFrame(page);
+  const body = await toc.textContent('body');
+  assert.match(body, /On containers/);
+  assert.match(body, /Ordinals and order/);
+  // Depth is expressed as a class the stylesheet indents.
+  assert.ok(await toc.$('.toc li.depth-1'), 'expected nested TOC entries');
+
+  // Descending to a leaf shows the ancestor chain.
+  await page.frameLocator('#site').getByRole('link', { name: 'Ordinals and order' }).click();
+  await page.frameLocator('#site').locator('.crumbs').waitFor({ timeout: 30_000 });
+  assert.match(await (await siteFrame(page)).textContent('.crumbs'), /On containers/);
+
+  assert.deepEqual(errors, []);
+  await context.close();
+});
+
+test('file://: TF-IDF similarity runs in the browser and writes related links', async () => {
+  const { page, context, errors } = await openShell(FILE_URL);
+  await siteFrame(page);
+
+  const before = await page.textContent('#stat-rel');
+  assert.match(before, /^0 links/, 'seeded content should start with no relations');
+
+  await page.click('#tab-settings');
+  await page.click('#sim-run');
+  // The report names how many items were vectorized and how many edges resulted.
+  await page.waitForFunction(
+    () => /similar edge/.test(document.querySelector('#sim-report')?.textContent ?? ''),
+    undefined,
+    { timeout: 60_000 },
+  );
+  const report = await page.textContent('#sim-report');
+  assert.match(report, /document\(s\) vectorized/);
+
+  // Edges landed in the database, and the pill reflects it.
+  await page.waitForFunction(
+    () => !/^0 links/.test(document.querySelector('#stat-rel')?.textContent ?? ''),
+    undefined,
+    { timeout: 30_000 },
+  );
+
+  // Part scope works too, over a different corpus.
+  await page.selectOption('#sim-scope', 'part');
+  await page.click('#sim-run');
+  await page.waitForFunction(
+    () => /part\(s\) vectorized/.test(document.querySelector('#sim-report')?.textContent ?? ''),
+    undefined,
+    { timeout: 60_000 },
+  );
+
+  assert.deepEqual(errors, []);
+  await context.close();
+});
+
+test('file://: adding a typed part renders through its widget', async () => {
+  const { page, context, errors } = await openShell(FILE_URL);
+  await siteFrame(page);
+
+  await openDocument(page, 'About');
+  const partsBefore = await page.locator('#parts-list .part-edit').count();
+  await page.selectOption('#part-add-kind', 'callout');
+  await page.click('#part-add');
+  await page.waitForFunction(
+    (n) => document.querySelectorAll('#parts-list .part-edit').length === n + 1,
+    partsBefore,
+    { timeout: 30_000 },
+  );
+
+  // The new part is last; fill its payload and save.
+  const box = page.locator('#parts-list .part-edit').last();
+  await box.locator('textarea.data').fill(
+    JSON.stringify({ title: 'Added live', tone: 'note', html: '<p>through the widget</p>' }),
+  );
+  await page.click('#save');
+
+  await page.frameLocator('#site').locator('.part.callout').last().waitFor({ timeout: 30_000 });
+  const frame = await siteFrame(page);
+  const body = await frame.textContent('body');
+  assert.match(body, /Added live/);
+  assert.match(body, /through the widget/);
+
+  assert.deepEqual(errors, []);
+  await context.close();
+});
+
+test('file://: invalid part JSON is refused with a message, not silently dropped', async () => {
+  const { page, context, errors } = await openShell(FILE_URL);
+  await siteFrame(page);
+
+  await openDocument(page, 'About');
+  const box = page.locator('#parts-list .part-edit').first();
+  await box.locator('textarea.data').fill('{ this is not json');
+  await page.click('#save');
+
+  await page.locator('#ed-err:not([hidden])').waitFor({ timeout: 30_000 });
+  assert.match(await page.textContent('#ed-err'), /part 1/);
+
+  // The stored content is untouched — a failed save must not half-apply.
+  await page.click('#view');
+  await waitForTitle(page, /About/);
+  assert.match(await (await siteFrame(page)).textContent('body'), /demonstration of a CMS/);
+
+  assert.deepEqual(errors, []);
   await context.close();
 });

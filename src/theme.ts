@@ -1,29 +1,35 @@
 // The default theme, seeded into the `templates` table on first boot.
 //
-// These are *rows*, not files. The admin's Theme tab edits them, the renderer reads them back,
-// and a page view is the result of composing them with content from the same database. That is
-// the whole conceit: WordPress keeps templates in the filesystem and content in MySQL; here
-// both are in the one SQLite file, and the "filesystem" is IndexedDB.
+// These are *rows*, not files — page templates, widget renderers and the stylesheet alike. The
+// admin's Theme tab edits them, the renderer reads them back, and a page view is the result of
+// composing them with content from the same database. WordPress keeps templates in the filesystem
+// and content in MySQL; here both are in the one SQLite database, and the "filesystem" is
+// IndexedDB.
 //
-// Template language lives in template.ts. `{{{x}}}` is raw, `{{x}}` is escaped — post bodies
+// Template language lives in template.ts. `{{{x}}}` is raw, `{{x}}` is escaped — part payloads
 // are raw on purpose, which is what lets a post ship its own <script>.
 import type { Db } from './db.js';
+import { DEFAULT_WIDGETS } from './widgets.js';
 
-export type TemplateName =
+export type PageTemplateName =
   | 'layout'
   | 'index'
   | 'single'
   | 'page'
+  | 'collection'
+  | 'part'
   | 'archive'
   | 'search'
   | 'notfound'
   | 'style';
 
-export const TEMPLATE_ORDER: TemplateName[] = [
+export const PAGE_TEMPLATES: PageTemplateName[] = [
   'layout',
   'index',
   'single',
   'page',
+  'collection',
+  'part',
   'archive',
   'search',
   'notfound',
@@ -35,7 +41,7 @@ const LAYOUT = `<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<!-- Relative URLs in post bodies resolve against the site root, not the current permalink.
+<!-- Relative URLs in part payloads resolve against the site root, not the current permalink.
      Without this, ./media/x.svg inside /p/demand-paging/ would resolve to
      /p/demand-paging/media/x.svg when a Service Worker is serving real URLs. -->
 <base href="{{site.home}}">
@@ -49,12 +55,16 @@ const LAYOUT = `<!doctype html>
   <nav class="menu">
     <a href="{{site.home}}">Home</a>
     {{#each site.pages}}<a href="{{url}}">{{title}}</a>{{/each}}
+    {{#each site.collections}}<a href="{{url}}">{{title}}</a>{{/each}}
   </nav>
   <form class="searchbox" data-cms-search>
     <input type="search" name="q" value="{{query}}" placeholder="Search this site…" autocomplete="off">
   </form>
 </header>
 <main>
+{{#if breadcrumbs}}
+<nav class="crumbs">{{#each breadcrumbs}}<a href="{{url}}">{{title}}</a><span>/</span>{{/each}}</nav>
+{{/if}}
 {{{content}}}
 </main>
 <footer class="footsie">
@@ -70,7 +80,7 @@ const INDEX = `<h1 class="page-title">{{site.tagline}}</h1>
 <ul class="postlist">
   {{#each posts}}
   <li>
-    <h2><a href="{{url}}">{{title}}</a></h2>
+    <h2><a href="{{url}}">{{#if number}}<span class="num">{{number}}</span> {{/if}}{{title}}</a></h2>
     <p class="meta">{{created}}{{#if terms}} · {{#each terms}}<a class="term" href="{{url}}">{{name}}</a> {{/each}}{{/if}}</p>
     <p class="excerpt">{{excerpt}}</p>
   </li>
@@ -78,6 +88,12 @@ const INDEX = `<h1 class="page-title">{{site.tagline}}</h1>
 </ul>
 {{else}}
 <p class="empty">Nothing published yet. Write something in the admin.</p>
+{{/if}}
+{{#if collections}}
+<aside class="cloud">
+  <h3>Collections</h3>
+  {{#each collections}}<a class="term" href="{{url}}">{{title}} <span>{{count}}</span></a>{{/each}}
+</aside>
 {{/if}}
 {{#if categories}}
 <aside class="cloud">
@@ -88,20 +104,76 @@ const INDEX = `<h1 class="page-title">{{site.tagline}}</h1>
 `;
 
 const SINGLE = `<article class="post">
-  <h1 class="page-title">{{post.title}}</h1>
+  <h1 class="page-title">{{#if post.number}}<span class="num">{{post.number}}</span> {{/if}}{{post.title}}</h1>
+  {{#if post.subtitle}}<p class="subtitle">{{post.subtitle}}</p>{{/if}}
   <p class="meta">{{post.created}}{{#if terms}} · {{#each terms}}<a class="term" href="{{url}}">{{name}}</a> {{/each}}{{/if}}</p>
-  <div class="content">{{{post.body}}}</div>
+  <div class="content">{{{parts}}}</div>
+  {{#if children}}
+  <nav class="subtoc">
+    <h3>In this section</h3>
+    <ol>{{#each children}}<li><a href="{{url}}">{{#if number}}<span class="num">{{number}}</span> {{/if}}{{title}}</a></li>{{/each}}</ol>
+  </nav>
+  {{/if}}
+  {{#if related}}
+  <aside class="related">
+    <h3>Related</h3>
+    <ul>{{#each related}}
+      <li>
+        <a href="{{url}}">{{#if number}}<span class="num">{{number}}</span> {{/if}}{{title}}</a>
+        <span class="rel">{{relation}}{{#if score}} · {{score}}{{/if}}</span>
+      </li>
+    {{/each}}</ul>
+  </aside>
+  {{/if}}
 </article>
 `;
 
 const PAGE = `<article class="post page">
   <h1 class="page-title">{{post.title}}</h1>
-  <div class="content">{{{post.body}}}</div>
+  <div class="content">{{{parts}}}</div>
+</article>
+`;
+
+// A collection is a book or a blog: its table of contents is the document hierarchy, rendered
+// as nested lists. `tree` arrives pre-flattened with a depth on each node, because the template
+// language has no recursion — see render.ts.
+const COLLECTION = `<h1 class="page-title">{{collection.title}}</h1>
+{{#if collection.subtitle}}<p class="subtitle">{{collection.subtitle}}</p>{{/if}}
+<p class="meta">{{collection.kind}} · {{count}} document(s)</p>
+{{#if tree}}
+<ul class="toc">
+  {{#each tree}}
+  <li class="depth-{{depth}}">
+    <a href="{{url}}">{{#if number}}<span class="num">{{number}}</span> {{/if}}{{title}}</a>
+    {{#if excerpt}}<span class="toc-note">{{excerpt}}</span>{{/if}}
+  </li>
+  {{/each}}
+</ul>
+{{else}}
+<p class="empty">This collection is empty.</p>
+{{/if}}
+`;
+
+// One part, addressable on its own. This is the "bring back part of an entry" view.
+const PART = `<article class="post standalone-part">
+  <p class="meta">
+    {{part.kind}} from <a href="{{post.url}}">{{post.title}}</a>
+  </p>
+  <div class="content">{{{parts}}}</div>
+  {{#if related}}
+  <aside class="related">
+    <h3>Similar passages</h3>
+    <ul>{{#each related}}
+      <li><a href="{{url}}">{{title}}</a> <span class="rel">{{score}}</span><br><span class="toc-note">{{text}}</span></li>
+    {{/each}}</ul>
+  </aside>
+  {{/if}}
+  <p><a href="{{post.url}}">Read the whole entry →</a></p>
 </article>
 `;
 
 const ARCHIVE = `<h1 class="page-title">{{term.name}}</h1>
-<p class="meta">{{term.kind}} · {{count}} post(s)</p>
+<p class="meta">{{term.kind}} · {{count}} document(s)</p>
 {{#if posts}}
 <ul class="postlist">
   {{#each posts}}
@@ -113,25 +185,32 @@ const ARCHIVE = `<h1 class="page-title">{{term.name}}</h1>
   {{/each}}
 </ul>
 {{else}}
-<p class="empty">No posts in this archive.</p>
+<p class="empty">No documents in this archive.</p>
 {{/if}}
 `;
 
+// Search returns *parts*, each linking to its own anchor, with the document it came from named
+// above it. Title matches are listed separately because they mean something different.
 const SEARCH = `<h1 class="page-title">Search</h1>
 {{#if query}}
-  <p class="meta">{{count}} result(s) for &ldquo;{{query}}&rdquo; — ranked by <code>bm25()</code></p>
+  <p class="meta">{{count}} passage(s) for &ldquo;{{query}}&rdquo; — ranked by <code>bm25()</code></p>
+  {{#if titles}}
+  <ul class="postlist titles">
+    <li class="group">Matching titles</li>
+    {{#each titles}}<li><h2><a href="{{url}}">{{#if number}}<span class="num">{{number}}</span> {{/if}}{{title}}</a></h2></li>{{/each}}
+  </ul>
+  {{/if}}
   {{#if results}}
-  <ul class="postlist">
+  <ul class="postlist passages">
     {{#each results}}
     <li>
-      <h2><a href="{{url}}">{{title}}</a></h2>
-      <p class="meta">{{created}}</p>
-      <p class="excerpt">{{{snippet}}}</p>
+      <p class="meta"><a href="{{documentUrl}}">{{documentTitle}}</a> · {{kind}}</p>
+      <p class="excerpt"><a href="{{url}}">{{{snippet}}}</a></p>
     </li>
     {{/each}}
   </ul>
   {{else}}
-  <p class="empty">No matches.</p>
+  <p class="empty">No passages matched.</p>
   {{/if}}
 {{else}}
   <p class="empty">Type a query above. Prefix matching is on by default; <code>NEAR</code>, <code>OR</code> and <code>"quoted phrases"</code> work too.</p>
@@ -154,7 +233,7 @@ const STYLE = `:root{
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);
   font:17px/1.7 Charter,Georgia,Cambria,"Times New Roman",serif;}
-.masthead{max-width:720px;margin:0 auto;padding:44px 24px 20px;border-bottom:1px solid var(--rule)}
+.masthead{max-width:760px;margin:0 auto;padding:44px 24px 20px;border-bottom:1px solid var(--rule)}
 .brand{font-size:26px;font-weight:700;letter-spacing:-.02em;color:var(--fg);text-decoration:none;
   font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
 .tagline{margin:4px 0 14px;color:var(--muted);font-size:15px;font-style:italic}
@@ -165,73 +244,140 @@ body{margin:0;background:var(--bg);color:var(--fg);
 .searchbox{margin-top:16px}
 .searchbox input{width:100%;padding:9px 12px;border:1px solid var(--rule);border-radius:7px;
   background:transparent;color:var(--fg);font:14px/1.4 inherit}
-main{max-width:720px;margin:0 auto;padding:28px 24px 60px}
+main{max-width:760px;margin:0 auto;padding:28px 24px 60px}
 .page-title{font-size:32px;line-height:1.2;letter-spacing:-.02em;margin:.2em 0 .3em}
+.subtitle{color:var(--muted);font-size:19px;font-style:italic;margin:-.2em 0 .6em}
 h2{font-size:21px;line-height:1.3;margin:0 0 4px}
 h2 a{color:var(--fg);text-decoration:none}
 h2 a:hover{color:var(--accent)}
 a{color:var(--accent)}
+.num{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.82em;color:var(--muted)}
 .meta{color:var(--muted);font-size:13px;margin:0 0 10px;
   font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
 .excerpt{margin:0;color:var(--fg)}
 .postlist{list-style:none;margin:26px 0 0;padding:0}
 .postlist li{padding:22px 0;border-top:1px solid var(--rule)}
+.postlist li.group{padding:8px 0 4px;border:none;color:var(--muted);font-size:11px;
+  text-transform:uppercase;letter-spacing:.09em;
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+.postlist.passages .excerpt a{color:var(--fg);text-decoration:none}
+.postlist.passages .excerpt a:hover{color:var(--accent)}
+.crumbs{display:flex;gap:8px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin:0 0 14px;
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+.crumbs span{opacity:.5}
+
+/* parts */
 .content{margin-top:20px}
-.content img{max-width:100%;height:auto;border-radius:8px;display:block;margin:22px 0}
+.part{margin:0 0 4px}
+.part.prose p:first-child,.part.raw p:first-child{margin-top:0}
+.content img{max-width:100%;height:auto;border-radius:8px;display:block}
+.content video{width:100%;border-radius:10px;background:#000;display:block}
+.part.figure,.part.code,.part.table,.part.video{margin:26px 0}
+.part.figure figcaption,.part.video figcaption,.part.code figcaption,.part.table figcaption{
+  color:var(--muted);font-size:13px;margin-top:8px;
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+.part.code pre{background:var(--code);padding:14px 16px;border-radius:8px;overflow-x:auto;margin:0;
+  font:13px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace}
 .content pre{background:var(--code);padding:14px 16px;border-radius:8px;overflow-x:auto;
   font:13px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace}
 .content code{background:var(--code);padding:1px 5px;border-radius:4px;font-size:.86em;
   font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .content pre code{background:none;padding:0}
-.content blockquote{margin:22px 0;padding-left:18px;border-left:3px solid var(--rule);color:var(--muted)}
+.part.quote,.content blockquote{margin:24px 0;padding-left:18px;border-left:3px solid var(--rule);color:var(--muted)}
+.part.quote cite{display:block;margin-top:8px;font-size:13px;font-style:normal}
+.part.callout{margin:26px 0;padding:16px 18px;border:1px solid var(--rule);border-radius:12px;
+  background:color-mix(in srgb, var(--accent) 5%, transparent)}
+.part.callout .callout-title{margin:0 0 6px;font-weight:700;font-size:14px;
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+.part.callout p:last-child{margin-bottom:0}
+.part.sealed{margin:26px 0;padding:18px;border:1px dashed var(--rule);border-radius:12px;color:var(--muted)}
+.part.sealed .sealed-title{margin:0 0 6px;font-weight:700;color:var(--fg);font-size:13px;
+  text-transform:uppercase;letter-spacing:.08em;
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+.part.story{display:grid;grid-template-columns:1fr;gap:16px;margin:30px 0;padding-top:24px;
+  border-top:1px solid var(--rule)}
+@media (min-width:720px){ .part.story{grid-template-columns:1fr 1fr;align-items:start} }
+.part.story .story-step{margin:0 0 4px;color:var(--accent);font-size:11px;font-weight:700;
+  text-transform:uppercase;letter-spacing:.1em;
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+.part.story h3{margin:0 0 8px;font-size:19px}
+.part.list ul{margin:0;padding-left:22px}
+.part.list .list-title{margin:0 0 6px;font-weight:600}
 .content table{border-collapse:collapse;width:100%;font-size:15px}
 .content th,.content td{border-bottom:1px solid var(--rule);padding:7px 10px;text-align:left}
-mark,.excerpt b{background:var(--mark);border-radius:2px;padding:0 2px}
+mark{background:var(--mark);border-radius:2px;padding:0 2px}
+
+/* structure */
+.toc{list-style:none;margin:26px 0 0;padding:0;font-size:16px}
+.toc li{padding:5px 0;border-top:1px solid var(--rule)}
+.toc li.depth-1{padding-left:22px}
+.toc li.depth-2{padding-left:44px;font-size:15px}
+.toc li.depth-3{padding-left:66px;font-size:14px}
+.toc a{text-decoration:none}
+.toc a:hover{text-decoration:underline}
+.toc-note{display:block;color:var(--muted);font-size:13px}
+.subtoc,.related{margin-top:42px;padding-top:20px;border-top:1px solid var(--rule)}
+.subtoc h3,.related h3,.cloud h3{font-size:12px;text-transform:uppercase;letter-spacing:.08em;
+  color:var(--muted);margin:0 0 10px;
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+.related ul,.subtoc ol{margin:0;padding-left:20px}
+.related li,.subtoc li{margin:5px 0}
+.related .rel{color:var(--muted);font-size:12px;
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
 .term{display:inline-block;color:var(--muted);text-decoration:none;font-size:12px;
   border:1px solid var(--rule);border-radius:999px;padding:2px 9px;margin:0 4px 4px 0;
   font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
 .term:hover{border-color:var(--accent);color:var(--accent)}
 .term span{opacity:.6}
 .cloud{margin-top:44px;padding-top:22px;border-top:1px solid var(--rule)}
-.cloud h3{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin:0 0 10px;
-  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
 .empty{color:var(--muted);font-style:italic}
-.footsie{max-width:720px;margin:0 auto;padding:22px 24px 50px;border-top:1px solid var(--rule);
+.footsie{max-width:760px;margin:0 auto;padding:22px 24px 50px;border-top:1px solid var(--rule);
   color:var(--muted);font-size:13px;
   font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
 .footsie p{margin:3px 0}
 .served b{color:var(--accent);font-weight:600}
 `;
 
-export const DEFAULT_TEMPLATES: Record<TemplateName, string> = {
+const DEFAULT_PAGES: Record<PageTemplateName, string> = {
   layout: LAYOUT,
   index: INDEX,
   single: SINGLE,
   page: PAGE,
+  collection: COLLECTION,
+  part: PART,
   archive: ARCHIVE,
   search: SEARCH,
   notfound: NOTFOUND,
   style: STYLE,
 };
 
+/** Every seeded template: page templates plus one renderer per widget kind. */
+export const DEFAULT_TEMPLATES: Record<string, string> = {
+  ...DEFAULT_PAGES,
+  ...DEFAULT_WIDGETS,
+};
+
+/** Names offered in the admin's template picker, pages first then widgets. */
+export const TEMPLATE_ORDER: string[] = [
+  ...PAGE_TEMPLATES,
+  ...Object.keys(DEFAULT_WIDGETS).sort(),
+];
+
 /** Insert any template the database does not already have. Never overwrites an edited one. */
 export async function seedTheme(db: Db): Promise<void> {
-  for (const name of TEMPLATE_ORDER) {
-    await db.query(`INSERT OR IGNORE INTO templates (name, body) VALUES (?, ?)`, [
-      name,
-      DEFAULT_TEMPLATES[name],
-    ]);
+  for (const [name, body] of Object.entries(DEFAULT_TEMPLATES)) {
+    await db.query(`INSERT OR IGNORE INTO templates (name, body) VALUES (?, ?)`, [name, body]);
   }
 }
 
-export async function getTemplate(db: Db, name: TemplateName): Promise<string> {
+export async function getTemplate(db: Db, name: string): Promise<string> {
   const body = await db.scalar(`SELECT body FROM templates WHERE name = ?`, [name]);
-  // Fall back to the built-in rather than rendering nothing, so deleting a row cannot brick
-  // the site — the theme table is user-editable.
-  return typeof body === 'string' ? body : DEFAULT_TEMPLATES[name];
+  // Fall back to the built-in rather than rendering nothing, so deleting a row cannot brick the
+  // site — the theme table is user-editable.
+  return typeof body === 'string' ? body : DEFAULT_TEMPLATES[name] ?? '';
 }
 
-export async function setTemplate(db: Db, name: TemplateName, body: string): Promise<void> {
+export async function setTemplate(db: Db, name: string, body: string): Promise<void> {
   await db.query(
     `INSERT INTO templates (name, body) VALUES (?, ?)
        ON CONFLICT(name) DO UPDATE SET body = excluded.body`,
@@ -239,15 +385,13 @@ export async function setTemplate(db: Db, name: TemplateName, body: string): Pro
   );
 }
 
-export async function resetTemplate(db: Db, name: TemplateName): Promise<void> {
-  await setTemplate(db, name, DEFAULT_TEMPLATES[name]);
+export async function resetTemplate(db: Db, name: string): Promise<void> {
+  await setTemplate(db, name, DEFAULT_TEMPLATES[name] ?? '');
 }
 
-/** Load every template in one pass, so a render does not issue eight separate queries. */
+/** Load every template in one pass, so a render does not issue a query per template. */
 export async function loadTemplates(db: Db): Promise<Record<string, string>> {
-  const rows = await db.query<{ name: string; body: string }>(
-    `SELECT name, body FROM templates`,
-  );
+  const rows = await db.query<{ name: string; body: string }>(`SELECT name, body FROM templates`);
   const out: Record<string, string> = { ...DEFAULT_TEMPLATES };
   for (const row of rows) out[row.name] = row.body;
   return out;

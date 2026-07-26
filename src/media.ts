@@ -6,13 +6,14 @@
 // SQLite only reads when the column is actually selected, so listing the library reads the row
 // headers and none of the image data. `listMedia` deliberately never selects `bytes`.
 import type { Db } from './db.js';
-import { newId, slugify } from './content.js';
+import { newId, slugify } from './documents.js';
 
 export interface MediaRow {
   id: number;
   slug: string;
   mime: string;
   size: number;
+  caption: string;
   created: string;
 }
 
@@ -50,9 +51,9 @@ export async function addMedia(
   const id = newId();
   const slug = await uniqueMediaSlug(db, mediaSlug(filename));
   await db.query(
-    `INSERT INTO media (id, slug, mime, bytes, size, created)
-     VALUES (?, ?, ?, ?, ?, datetime('now'))`,
-    [id, slug, mime, bytes, bytes.byteLength],
+    `INSERT INTO media (id, slug, mime, size, caption, created, bytes)
+     VALUES (?, ?, ?, ?, '', datetime('now'), ?)`,
+    [id, slug, mime, bytes.byteLength, bytes],
   );
   const row = await getMediaRow(db, id);
   if (!row) throw new Error('media insert did not land');
@@ -66,7 +67,7 @@ export async function addMediaFile(db: Db, file: File): Promise<MediaRow> {
 
 export async function getMediaRow(db: Db, id: number): Promise<MediaRow | undefined> {
   return (
-    await db.query<MediaRow>(`SELECT id, slug, mime, size, created FROM media WHERE id = ?`, [id])
+    await db.query<MediaRow>(`SELECT id, slug, mime, size, caption, created FROM media WHERE id = ?`, [id])
   )[0];
 }
 
@@ -85,7 +86,7 @@ export async function getMediaBySlug(db: Db, slug: string): Promise<MediaBlob | 
 /** Library listing. Never selects `bytes` — see the note at the top of this file. */
 export async function listMedia(db: Db, limit = 200): Promise<MediaRow[]> {
   return db.query<MediaRow>(
-    `SELECT id, slug, mime, size, created FROM media ORDER BY created DESC, id DESC LIMIT ?`,
+    `SELECT id, slug, mime, size, caption, created FROM media ORDER BY created DESC, id DESC LIMIT ?`,
     [limit],
   );
 }

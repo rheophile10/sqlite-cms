@@ -1,7 +1,7 @@
 // Categories and tags. One table, one join table — wp_terms and wp_term_relationships with
 // the taxonomy folded into a `kind` column, since two taxonomies is all this needs.
 import type { Db } from './db.js';
-import { newId, slugify } from './content.js';
+import { newId, slugify } from './documents.js';
 
 export type TermKind = 'category' | 'tag';
 
@@ -47,24 +47,24 @@ export async function getTermBySlug(
   )[0];
 }
 
-/** Terms attached to a post, categories before tags. */
-export async function termsForPost(db: Db, postId: number): Promise<Term[]> {
+/** Terms attached to a document, categories before tags. */
+export async function termsForDocument(db: Db, documentId: number): Promise<Term[]> {
   return db.query<Term>(
     `SELECT t.id, t.kind, t.slug, t.name
-       FROM terms t JOIN post_terms pt ON pt.term_id = t.id
-      WHERE pt.post_id = ?
+       FROM terms t JOIN document_terms pt ON pt.term_id = t.id
+      WHERE pt.document_id = ?
       ORDER BY CASE t.kind WHEN 'category' THEN 0 ELSE 1 END, t.name`,
-    [postId],
+    [documentId],
   );
 }
 
 /**
- * Replace a post's terms of one kind wholesale. Names are free text from the editor —
+ * Replace a document's terms of one kind wholesale. Names are free text from the editor —
  * comma-separated — so blanks and duplicates are filtered here rather than at the call site.
  */
-export async function setPostTerms(
+export async function setDocumentTerms(
   db: Db,
-  postId: number,
+  documentId: number,
   kind: TermKind,
   names: readonly string[],
 ): Promise<void> {
@@ -72,16 +72,16 @@ export async function setPostTerms(
 
   // Drop existing links of this kind only; the other taxonomy is untouched.
   await db.query(
-    `DELETE FROM post_terms
-      WHERE post_id = ?
+    `DELETE FROM document_terms
+      WHERE document_id = ?
         AND term_id IN (SELECT id FROM terms WHERE kind = ?)`,
-    [postId, kind],
+    [documentId, kind],
   );
 
   for (const name of wanted) {
     const termId = await ensureTerm(db, kind, name);
-    await db.query(`INSERT OR IGNORE INTO post_terms (post_id, term_id) VALUES (?, ?)`, [
-      postId,
+    await db.query(`INSERT OR IGNORE INTO document_terms (document_id, term_id) VALUES (?, ?)`, [
+      documentId,
       termId,
     ]);
   }
@@ -95,13 +95,13 @@ export function parseTermList(input: string): string[] {
     .filter(Boolean);
 }
 
-/** All terms of a kind that have at least one published post — the site's term cloud. */
+/** All terms of a kind that have at least one published document — the site's term cloud. */
 export async function listTerms(db: Db, kind: TermKind): Promise<TermWithCount[]> {
   return db.query<TermWithCount>(
     `SELECT t.id, t.kind, t.slug, t.name, count(p.id) AS count
        FROM terms t
-       JOIN post_terms pt ON pt.term_id = t.id
-       JOIN posts p       ON p.id = pt.post_id AND p.status = 'published'
+       JOIN document_terms pt ON pt.term_id = t.id
+       JOIN documents p   ON p.id = pt.document_id AND p.status = 'published'
       WHERE t.kind = ?
       GROUP BY t.id
       ORDER BY count DESC, t.name`,
@@ -109,9 +109,9 @@ export async function listTerms(db: Db, kind: TermKind): Promise<TermWithCount[]
   );
 }
 
-/** Remove terms no longer attached to any post. Called after deleting a post. */
+/** Remove terms no longer attached to any document. Called after deleting one. */
 export async function pruneOrphanTerms(db: Db): Promise<void> {
   await db.exec(
-    `DELETE FROM terms WHERE id NOT IN (SELECT DISTINCT term_id FROM post_terms)`,
+    `DELETE FROM terms WHERE id NOT IN (SELECT DISTINCT term_id FROM document_terms)`,
   );
 }
