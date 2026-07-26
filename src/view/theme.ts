@@ -46,6 +46,23 @@ const LAYOUT = `<!doctype html>
      /p/demand-paging/media/x.svg when a Service Worker is serving real URLs. -->
 <base href="{{site.home}}">
 <title>{{title}} · {{site.title}}</title>
+{{#if card}}
+<!-- Link preview. Present here so view-source is honest and a browser extension can read it — but a
+     crawler runs no JavaScript and no Service Worker intercepts for it, so previews only actually
+     work if a build step also writes static stubs. See model/cards.ts. -->
+<meta name="description" content="{{card.description}}">
+<meta property="og:type" content="{{card.type}}">
+<meta property="og:site_name" content="{{card.siteName}}">
+<meta property="og:title" content="{{card.title}}">
+<meta property="og:description" content="{{card.description}}">
+{{#if card.url}}<meta property="og:url" content="{{card.url}}">{{/if}}
+{{#if card.image}}<meta property="og:image" content="{{card.image}}">
+<meta property="og:image:alt" content="{{card.imageAlt}}">{{/if}}
+<meta name="twitter:card" content="{{card.kind}}">
+<meta name="twitter:title" content="{{card.title}}">
+<meta name="twitter:description" content="{{card.description}}">
+{{#if card.image}}<meta name="twitter:image" content="{{card.image}}">{{/if}}
+{{/if}}
 <style>{{{style}}}</style>
 </head>
 <body>
@@ -56,6 +73,14 @@ const LAYOUT = `<!doctype html>
     <a href="{{site.home}}">Home</a>
     {{#each site.pages}}<a href="{{url}}">{{title}}</a>{{/each}}
     {{#each site.collections}}<a href="{{url}}">{{title}}</a>{{/each}}
+    {{#if viewer.portal}}
+      {{#if viewer.signedIn}}
+      <a class="chip" href="{{viewer.portal}}" target="_blank" rel="noopener"
+         title="{{viewer.email}}">{{#if viewer.name}}{{viewer.name}}{{else}}{{viewer.email}}{{/if}}</a>
+      {{else}}
+      <a class="chip" href="{{viewer.portal}}" target="_blank" rel="noopener">Login</a>
+      {{/if}}
+    {{/if}}
   </nav>
   <!-- Every named field becomes a URL parameter, so a result set is a shareable link. -->
   <form class="searchbox" data-cms-query action="{{site.home}}query/">
@@ -333,6 +358,9 @@ body{margin:0;background:var(--bg);color:var(--fg);
   text-transform:uppercase;letter-spacing:.08em}
 .menu a{color:var(--muted);text-decoration:none}
 .menu a:hover{color:var(--accent)}
+.menu .chip{border:1px solid var(--rule);border-radius:999px;padding:3px 11px;letter-spacing:.04em;
+  text-transform:none}
+.menu .chip:hover{border-color:var(--accent)}
 .searchbox{margin-top:16px}
 .searchbox input{width:100%;padding:9px 12px;border:1px solid var(--rule);border-radius:7px;
   background:transparent;color:var(--fg);font:14px/1.4 inherit}

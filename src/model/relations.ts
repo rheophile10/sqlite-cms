@@ -12,15 +12,22 @@ import { newId } from './documents.js';
 
 export type RelationScope = 'document' | 'part';
 export type RelationType =
+  /** Computed neighbours — see similarity.ts. */
   | 'similar'
+  /** The same thing said in two places: two editions of one numbered rule. */
+  | 'equivalent'
   | 'see_also'
   | 'supersedes'
   | 'superseded_by'
   | 'derived_from'
   | 'cross_reference'
-  | 'amends';
+  | 'amends'
+  /** A question that examines a passage — a flashcard against the rule it drills. */
+  | 'tests'
+  /** An explicit citation, with the detail (page, clause) in `metadata`. */
+  | 'references';
 
-export type RelationOrigin = 'manual' | 'tfidf' | 'number_match';
+export type RelationOrigin = 'manual' | 'tfidf' | 'number_match' | 'import';
 
 /** Types that imply an edge the other way, and what that edge is. */
 const INVERSE: Partial<Record<RelationType, RelationType>> = {
@@ -28,7 +35,10 @@ const INVERSE: Partial<Record<RelationType, RelationType>> = {
   superseded_by: 'supersedes',
   see_also: 'see_also',
   similar: 'similar',
+  equivalent: 'equivalent',
   cross_reference: 'cross_reference',
+  // `tests` and `references` are directional and have no natural inverse: a card tests a rule, and
+  // "is tested by" is a query, not an edge worth storing twice.
 };
 
 export interface Relation {
@@ -41,18 +51,41 @@ export interface Relation {
   confidence: number;
   origin: RelationOrigin;
   note: string;
+  /** Raw JSON, or null. Use relationMetadata() to get it parsed. */
+  metadata: string | null;
 }
 
-const COLUMNS = `id, from_scope, from_id, to_scope, to_id, type, confidence, origin, note`;
+const COLUMNS = `id, from_scope, from_id, to_scope, to_id, type, confidence, origin, note, metadata`;
+
+/**
+ * Parse an edge's metadata. Never throws: the column is free-form by design, and a malformed value
+ * should degrade to "no extra detail" rather than take a page down.
+ */
+export function relationMetadata(relation: Pick<Relation, 'metadata'>): Record<string, unknown> {
+  if (!relation.metadata) return {};
+  try {
+    const parsed: unknown = JSON.parse(relation.metadata);
+    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+}
 
 export interface LinkOptions {
   type?: RelationType;
   confidence?: number;
   origin?: RelationOrigin;
   note?: string;
+  /** Anything extra this edge type needs. Omitted entirely stores NULL, not '{}'. */
+  metadata?: Record<string, unknown> | null;
   fromScope?: RelationScope;
   toScope?: RelationScope;
-  /** Also write the inverse edge, where the type has one. Default true for manual links. */
+  /**
+   * Also write the inverse edge, where the type has one. Defaults to true except for `tfidf`,
+   * where the reverse arrives on its own and writing it would double the work.
+   */
   reciprocal?: boolean;
 }
 
@@ -77,10 +110,12 @@ export async function link(
     edgeType: RelationType,
   ): Promise<void> => {
     await db.query(
-      `INSERT INTO relations (id, from_scope, from_id, to_scope, to_id, type, confidence, origin, note)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO relations
+         (id, from_scope, from_id, to_scope, to_id, type, confidence, origin, note, metadata)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(from_scope, from_id, to_scope, to_id, type)
-         DO UPDATE SET confidence = excluded.confidence, note = excluded.note, origin = excluded.origin`,
+         DO UPDATE SET confidence = excluded.confidence, note = excluded.note,
+                       origin = excluded.origin, metadata = excluded.metadata`,
       [
         newId(),
         aScope,
@@ -91,14 +126,20 @@ export async function link(
         options.confidence ?? 0,
         origin,
         options.note ?? '',
+        // Absent means NULL. Storing '{}' would make "has no metadata" and "has empty metadata"
+        // indistinguishable, and every row pay for a value it does not have.
+        options.metadata ? JSON.stringify(options.metadata) : null,
       ],
     );
   };
 
   await insert(fromScope, fromId, toScope, toId, type);
 
+  // Symmetric and inverse types get their other direction written, so navigation works from both
+  // ends. The exception is `tfidf`: cosine is symmetric, so a bulk run reaches the reverse edge on
+  // its own when it processes that neighbour, and forcing it would double every write.
   const inverse = INVERSE[type];
-  const reciprocal = options.reciprocal ?? origin === 'manual';
+  const reciprocal = options.reciprocal ?? origin !== 'tfidf';
   if (reciprocal && inverse) await insert(toScope, toId, fromScope, fromId, inverse);
 }
 

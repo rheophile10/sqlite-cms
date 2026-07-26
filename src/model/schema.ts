@@ -126,10 +126,16 @@ CREATE TABLE IF NOT EXISTS relations (
   to_scope   TEXT    NOT NULL DEFAULT 'document',
   to_id      INTEGER NOT NULL DEFAULT 0,
   type       TEXT    NOT NULL DEFAULT 'similar',
-    -- similar | see_also | supersedes | superseded_by | derived_from | cross_reference | amends
+    -- similar | equivalent | see_also | supersedes | superseded_by | derived_from
+    -- cross_reference | amends | tests | references
   confidence REAL    NOT NULL DEFAULT 0,
-  origin     TEXT    NOT NULL DEFAULT 'manual',    -- manual | tfidf | number_match
-  note       TEXT    NOT NULL DEFAULT ''
+  origin     TEXT    NOT NULL DEFAULT 'manual',    -- manual | tfidf | number_match | import
+  note       TEXT    NOT NULL DEFAULT '',
+  -- Free-form JSON, and NULL by default rather than '{}' — an edge that has nothing extra to say
+  -- should say nothing, and a null is cheaper to store and unambiguous to test for. This is the
+  -- escape hatch for whatever a future edge type needs (a page reference, a span, a score
+  -- breakdown) without another migration. Nullable, so cr-sqlite does not require a DEFAULT.
+  metadata   TEXT
 );
 CREATE UNIQUE INDEX IF NOT EXISTS relations_edge
   ON relations(from_scope, from_id, to_scope, to_id, type);
@@ -178,6 +184,28 @@ CREATE TABLE IF NOT EXISTS media (
   bytes   BLOB
 );
 CREATE UNIQUE INDEX IF NOT EXISTS media_slug ON media(slug);
+
+-- Link/preview cards — Open Graph and Twitter.
+--
+-- One row per thing that can be shared: scope 'site' with ref 0 is the default, and scope
+-- 'document' with a document id overrides it. Resolution is override-then-fallback, so a site
+-- gets sensible cards for free and only interesting entries need their own.
+--
+-- The *definition* is here; the image is a media slug, so the bytes sit in the media table with
+-- everything else and are served by the same route. A card is ~100 KB — the file VFS earns its
+-- place for streaming a 2 GB video, not for this.
+CREATE TABLE IF NOT EXISTS cards (
+  scope       TEXT NOT NULL DEFAULT 'document',   -- site | document
+  ref         INTEGER NOT NULL DEFAULT 0,         -- 0 for the site card
+  kind        TEXT NOT NULL DEFAULT 'summary_large_image',
+  title       TEXT NOT NULL DEFAULT '',
+  description TEXT NOT NULL DEFAULT '',
+  image       TEXT NOT NULL DEFAULT '',           -- a media slug, resolved against the content base
+  image_alt   TEXT NOT NULL DEFAULT '',
+  updated     TEXT NOT NULL DEFAULT '',
+  metadata    TEXT,
+  PRIMARY KEY (scope, ref)
+);
 
 -- The theme, including widget renderers (rows named widget:<kind>) and the stylesheet.
 CREATE TABLE IF NOT EXISTS templates (

@@ -108,6 +108,9 @@ export type { MediaBlob, MediaRow } from './model/media.js';
 
 export { DEFAULT_SETTINGS, getSetting, seedSettings, setSetting } from './model/settings.js';
 
+export { cardFor, deleteCard, getCard, listCards, seedSiteCard, setCard } from './model/cards.js';
+export type { Card, CardContext, CardEdits, CardKind, CardScope, ResolvedCard } from './model/cards.js';
+
 // ── relations and relatedness ────────────────────────────────────────────────────────────────
 export {
   clearByOrigin,
@@ -115,6 +118,7 @@ export {
   link,
   relatedDocuments,
   relatedParts,
+  relationMetadata,
   relationsFrom,
   unlink,
 } from './model/relations.js';
@@ -170,8 +174,8 @@ export { BUILTIN_WIDGETS, DEFAULT_WIDGETS, renderPart, renderParts, widgetTempla
 export type { WidgetContext } from './view/widgets.js';
 
 export { clip, flattenTree, formatDate, renderPath, renderPreview, routeOf } from './view/render.js';
-export type { RenderOptions, Route, Served } from './view/render.js';
+export type { RenderOptions, Route, Served, Viewer } from './view/render.js';
 
 // ── serving ──────────────────────────────────────────────────────────────────────────────────
 export { contentBase, createTransport, isSitePath } from './serve/transport.js';
-export type { Transport, TransportMode } from './serve/transport.js';
+export type { SiteContext, Transport, TransportMode } from './serve/transport.js';

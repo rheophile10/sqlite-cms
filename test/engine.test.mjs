@@ -17,6 +17,7 @@ const {
   createDocument,
   deleteDocument,
   getDocument,
+  getPublishedBySlug,
   listDocuments,
   listOrdered,
   reorder,
@@ -39,9 +40,9 @@ const {
   updatePart,
 } = await import(B + 'model/parts.js');
 const { renderPart, renderParts, DEFAULT_WIDGETS } = await import(B + 'view/widgets.js');
-const { link, unlink, relatedDocuments, clearByOrigin, countRelations } = await import(
-  B + 'model/relations.js'
-);
+const { link, unlink, relatedDocuments, clearByOrigin, countRelations, relationsFrom, relationMetadata } =
+  await import(B + 'model/relations.js');
+const { cardFor, getCard, setCard, seedSiteCard } = await import(B + 'model/cards.js');
 const { cosineNeighbours, computeSimilar, tokenize } = await import(B + 'model/similarity.js');
 const { addMedia, getMediaBySlug, listMedia, countMedia } = await import(B + 'model/media.js');
 const { setDocumentTerms, listTerms, termsForDocument } = await import(B + 'model/taxonomy.js');
@@ -973,5 +974,140 @@ test('the query page renders facets, chips and paging as links', async () => {
   assert.doesNotMatch(limited.body, /previous/);
   const second = await html(db, '/p/query/?q=the&limit=1&offset=1');
   assert.match(second.body, /previous/);
+  await db.close();
+});
+
+// ──────────────────────────── edges carry arbitrary metadata ────────────────────────────
+
+test('an edge can carry JSON metadata, and stores NULL when it has none', async () => {
+  const db = await site('t-edge-meta', { seed: false });
+  const rule = await createDocument(db, { title: 'Rule 71', number: '71', status: 'published' });
+  const card = await createDocument(db, { title: 'Flashcard: Rule 71', status: 'published' });
+
+  // A plain edge stores NULL rather than '{}' — "no metadata" and "empty metadata" must not be
+  // the same value, and every row should not pay for a field it does not use.
+  await link(db, rule, card, { type: 'see_also' });
+  const plain = (await relationsFrom(db, rule, { type: 'see_also' }))[0];
+  assert.equal(plain.metadata, null);
+  assert.deepEqual(relationMetadata(plain), {});
+
+  // A citation with the detail in metadata — the case the column exists for.
+  await link(db, card, rule, {
+    type: 'tests',
+    confidence: 1,
+    origin: 'import',
+    metadata: { deck: 'cror-signals', page: 118, span: [12, 96] },
+  });
+  const tests = (await relationsFrom(db, card, { type: 'tests' }))[0];
+  assert.equal(tests.origin, 'import');
+  assert.deepEqual(relationMetadata(tests), {
+    deck: 'cror-signals',
+    page: 118,
+    span: [12, 96],
+  });
+
+  // `tests` is directional: "is tested by" is a query, not a second stored edge.
+  assert.equal((await relationsFrom(db, rule, { type: 'tests' })).length, 0);
+
+  // Re-linking updates the metadata rather than duplicating the edge.
+  await link(db, card, rule, { type: 'tests', metadata: { deck: 'cror-signals', page: 119 } });
+  const again = await relationsFrom(db, card, { type: 'tests' });
+  assert.equal(again.length, 1);
+  assert.equal(relationMetadata(again[0]).page, 119);
+
+  // Malformed metadata degrades to nothing rather than throwing — the column is free-form.
+  await db.query(`UPDATE relations SET metadata = '{not json' WHERE type = 'tests'`);
+  assert.deepEqual(relationMetadata((await relationsFrom(db, card, { type: 'tests' }))[0]), {});
+
+  // `equivalent` is symmetric, the way two editions of one numbered rule are.
+  const other = await createDocument(db, { title: 'Rule 71 (1962)', status: 'published' });
+  await link(db, rule, other, { type: 'equivalent', origin: 'number_match', confidence: 0.5 });
+  assert.equal((await relationsFrom(db, other, { type: 'equivalent' })).length, 1);
+  await db.close();
+});
+
+// ─────────────────────────────── link/preview cards ───────────────────────────────
+
+test('cards resolve override-then-fallback and reach the served HTML', async () => {
+  const db = await site('t-cards');
+  const ORIGIN = 'https://example.test';
+  const options = { base: '/p/', transport: 'test', origin: ORIGIN };
+
+  await seedSiteCard(db);
+  const siteCard = await getCard(db, 'site', 0);
+  assert.ok(siteCard, 'a site card should exist after seeding');
+
+  await setCard(db, 'site', 0, { image: 'paging.svg', description: 'The site default.' });
+
+  const doc = await getPublishedBySlug(db, 'hello-world');
+  // With nothing of its own, a document inherits the site image but uses its own title/excerpt.
+  let card = await cardFor(db, { base: '/p/', origin: ORIGIN }, doc);
+  assert.equal(card.title, doc.title);
+  assert.equal(card.image, `${ORIGIN}/p/media/paging.svg`, 'inherits the site image');
+  assert.equal(card.url, `${ORIGIN}/p/hello-world/`);
+  assert.equal(card.type, 'article');
+
+  // Overrides are per field: setting only a title keeps the inherited image.
+  await setCard(db, 'document', doc.id, { title: 'A Sharper Headline' });
+  card = await cardFor(db, { base: '/p/', origin: ORIGIN }, doc);
+  assert.equal(card.title, 'A Sharper Headline');
+  assert.equal(card.image, `${ORIGIN}/p/media/paging.svg`, 'still inherited');
+
+  // The site card is the website, not an article.
+  const forSite = await cardFor(db, { base: '/p/', origin: ORIGIN });
+  assert.equal(forSite.type, 'website');
+  assert.equal(forSite.description, 'The site default.');
+
+  // Without an origin there is nothing to resolve against, so no URL is emitted at all — a
+  // relative og:image is worse than none, because no crawler will resolve it.
+  const relative = await cardFor(db, { base: '/p/' }, doc);
+  assert.equal(relative.image, '');
+  assert.equal(relative.url, '');
+
+  // An absolute image is passed through untouched.
+  await setCard(db, 'document', doc.id, { image: 'https://cdn.test/x.png' });
+  assert.equal((await cardFor(db, { base: '/p/', origin: ORIGIN }, doc)).image, 'https://cdn.test/x.png');
+
+  // And it all lands in the <head> of the served page.
+  const page = await html(db, '/p/hello-world/', options);
+  assert.match(page.body, /<meta property="og:title" content="A Sharper Headline">/);
+  assert.match(page.body, /<meta name="twitter:card" content="summary_large_image">/);
+  assert.match(page.body, new RegExp(`<meta property="og:url" content="${ORIGIN}/p/hello-world/">`));
+  assert.match(page.body, /<meta property="og:type" content="article">/);
+
+  const index = await html(db, '/p/', options);
+  assert.match(index.body, /<meta property="og:type" content="website">/);
+  await db.close();
+});
+
+test('a viewer is rendered from what the shell supplies, never from the database', async () => {
+  const db = await site('t-viewer');
+  const base = { base: '/p/', transport: 'test' };
+
+  // No viewer at all — the only possible state at file://, and nothing is drawn.
+  assert.doesNotMatch((await html(db, '/p/', base)).body, /class="chip"/);
+
+  // Signed out, but a portal to send them to.
+  const out = await html(db, '/p/', {
+    ...base,
+    viewer: { signedIn: false, portal: '/apps/' },
+  });
+  assert.match(out.body, /class="chip" href="\/apps\/"/);
+  assert.match(out.body, />Login</);
+
+  // Signed in: the chip names them and still points at the portal.
+  const inn = await html(db, '/p/', {
+    ...base,
+    viewer: { signedIn: true, email: 'reader@example.test', name: 'Reader', portal: '/apps/' },
+  });
+  assert.match(inn.body, /title="reader@example\.test"/);
+  assert.match(inn.body, />Reader</);
+  assert.doesNotMatch(inn.body, />Login</);
+
+  // Nothing about the viewer is persisted — authentication belongs to whatever owns the session.
+  assert.equal(
+    Number(await db.scalar(`SELECT count(*) FROM sqlite_schema WHERE name LIKE '%session%'`)),
+    0,
+  );
   await db.close();
 });

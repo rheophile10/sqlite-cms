@@ -13,10 +13,24 @@
 // which is why the site looks identical either way — including post <script> tags, which
 // execute in both because a blob document is a real document with its own origin.
 import type { Db } from '../engine/db.js';
-import { renderPath, type RenderOptions, type Served } from '../view/render.js';
+import { renderPath, type RenderOptions, type Served, type Viewer } from '../view/render.js';
 import { getMediaBySlug } from '../model/media.js';
 
 export type TransportMode = 'sw' | 'blob';
+
+/**
+ * Everything the renderer needs that the transport cannot work out for itself.
+ *
+ * `base` and `transport` are derived from the environment; these two are not. The origin is a
+ * deployment fact, and the viewer belongs to whatever owns the session — so both are supplied by
+ * the shell and simply carried through to every render.
+ */
+export interface SiteContext {
+  /** Public origin, for absolute card URLs. */
+  origin?: string;
+  /** Who is reading, if anybody. */
+  viewer?: Viewer;
+}
 
 export interface Transport {
   readonly mode: TransportMode;
@@ -134,9 +148,14 @@ async function inlineMedia(db: Db, html: string, base: string): Promise<string> 
   return `<!doctype html>\n${doc.documentElement.outerHTML}`;
 }
 
-function createBlobTransport(db: Db, frame: HTMLIFrameElement, label: string): Transport {
+function createBlobTransport(
+  db: Db,
+  frame: HTMLIFrameElement,
+  label: string,
+  context: SiteContext,
+): Transport {
   const base = contentBase();
-  const options: RenderOptions = { base, transport: label };
+  const options: RenderOptions = { base, transport: label, ...context };
 
   // The one blob URL backing whatever is on screen. Media is inlined as data: URIs, so the
   // document is the only thing needing a URL — and the only thing needing revoking.
@@ -247,9 +266,14 @@ async function activateWorker(timeoutMs = 8000): Promise<boolean> {
   }
 }
 
-function createSwTransport(db: Db, frame: HTMLIFrameElement, label: string): Transport {
+function createSwTransport(
+  db: Db,
+  frame: HTMLIFrameElement,
+  label: string,
+  context: SiteContext,
+): Transport {
   const base = contentBase();
-  const options: RenderOptions = { base, transport: label };
+  const options: RenderOptions = { base, transport: label, ...context };
   let previewUrl: string | undefined;
 
   // The worker's fetch handler asks us for every path under the content prefix. This listener
@@ -317,12 +341,21 @@ function createSwTransport(db: Db, frame: HTMLIFrameElement, label: string): Tra
  * first when the context allows one at all, and falls back to blob: otherwise — so a
  * double-clicked .html file and a deployed site run the same code with different plumbing.
  */
-export async function createTransport(db: Db, frame: HTMLIFrameElement): Promise<Transport> {
+export async function createTransport(
+  db: Db,
+  frame: HTMLIFrameElement,
+  context: SiteContext = {},
+): Promise<Transport> {
   if (location.protocol === 'file:') {
-    return createBlobTransport(db, frame, 'blob: URL (file://)');
+    return createBlobTransport(db, frame, 'blob: URL (file://)', context);
   }
   if (await activateWorker()) {
-    return createSwTransport(db, frame, `service worker (${location.protocol.replace(':', '')})`);
+    return createSwTransport(
+      db,
+      frame,
+      `service worker (${location.protocol.replace(':', '')})`,
+      context,
+    );
   }
-  return createBlobTransport(db, frame, 'blob: URL (no service worker)');
+  return createBlobTransport(db, frame, 'blob: URL (no service worker)', context);
 }

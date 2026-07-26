@@ -20,6 +20,7 @@ import {
   type Doc,
   type DocNode,
 } from '../model/documents.js';
+import { cardFor } from '../model/cards.js';
 import { getMediaBySlug } from '../model/media.js';
 import { getPartByAnchor, listParts, type Part } from '../model/parts.js';
 import {
@@ -51,6 +52,26 @@ export interface RenderOptions {
   base: string;
   /** Shown in the footer so the page states which transport produced it. */
   transport: string;
+  /**
+   * Public origin, e.g. `https://rheophile.ca`. Only used to make card URLs absolute — a relative
+   * `og:image` is worthless, because the crawler reading it has no base to resolve against.
+   */
+  origin?: string;
+  /**
+   * Who is reading, if anybody. Supplied by the shell, never stored: authentication belongs to
+   * whatever owns the session (a Supabase portal, say), and this renderer only needs enough to draw
+   * an account chip. Absent means signed out, which is the only possible state at file://.
+   */
+  viewer?: Viewer;
+}
+
+/** The reader, as far as a template needs to know. */
+export interface Viewer {
+  signedIn: boolean;
+  email?: string;
+  name?: string;
+  /** Where to send someone to sign in or manage their account. */
+  portal?: string;
 }
 
 export type Served =
@@ -241,6 +262,7 @@ async function siteContext(db: Db, options: RenderOptions) {
   const collections = await listCollections(db);
   const stats = await pageStats(db);
   return {
+    viewer: options.viewer ?? { signedIn: false },
     site: {
       title: (await getSetting(db, 'site.title')) || 'A SQLite Site',
       tagline: (await getSetting(db, 'site.tagline')) || 'Served out of the database',
@@ -350,6 +372,7 @@ export async function renderPath(db: Db, path: string, options: RenderOptions): 
         body: compose(templates, 'index', ctx.site.title, {
           ...ctx,
           query: '',
+          card: await cardFor(db, { base, origin: options.origin }),
           posts: views,
           categories,
           tags,
@@ -571,6 +594,16 @@ export async function renderPath(db: Db, path: string, options: RenderOptions): 
         score: r.origin === 'tfidf' ? r.confidence.toFixed(2) : '',
       }));
 
+      // The card goes in the served HTML so view-source is honest. A crawler will not see it —
+      // it runs no JavaScript and no Service Worker intercepts for it — which is why a build step
+      // has to emit static stubs as well. See model/cards.ts.
+      const card = await cardFor(
+        db,
+        { base, origin: options.origin },
+        doc,
+        rendered.parts.map((part) => part.text).join(' '),
+      );
+
       return {
         kind: 'html',
         status: 200,
@@ -584,6 +617,7 @@ export async function renderPath(db: Db, path: string, options: RenderOptions): 
           children,
           breadcrumbs: ancestors,
           related,
+          card,
         }),
       };
     }

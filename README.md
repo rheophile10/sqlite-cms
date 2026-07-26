@@ -34,7 +34,7 @@ npm install
 npm run dev        # vite dev server
 npm run build      # → docs/index.html (self-contained) + docs/sw.js + docs/404.html
 npm run serve      # static server, so the Service Worker path is reachable
-npm test           # model, routing, widgets, query, similarity  (31 tests, Node)
+npm test           # model, routing, widgets, query, cards, edges  (34 tests, Node)
 npm run test:e2e   # both transports in real Chromium            (19 tests)
 npm run demo       # narrated walkthrough + screenshots          (21 steps)
 ```
@@ -53,6 +53,7 @@ relations     typed edges between documents or parts, with a confidence and an o
 terms         categories and tags
 media         metadata + bytes
 templates     page templates, widget renderers, and the stylesheet
+cards         link/preview definitions — one per site, one per document
 recipients
 document_keys per-document encryption keys, sealed per keyholder
 ```
@@ -111,6 +112,64 @@ JavaScript state to get out of step with the address bar.
 
 `/p/search/?q=…` still works as an alias for links made before the vocabulary existed.
 
+## Edges
+
+`relations` is polymorphic on `(scope, id)` so the same edge types work between whole documents and
+between individual parts. It carries a `confidence`, an `origin` — `manual`, `tfidf`, `number_match`,
+`import` — and a nullable `metadata` JSON column for whatever a future edge type needs (a page
+reference, a span, a score breakdown) without another migration. **NULL by default, not `{}`**: an
+edge with nothing extra to say should say nothing, and the two states must stay distinguishable.
+
+Types: `similar`, `equivalent`, `see_also`, `supersedes`/`superseded_by`, `derived_from`,
+`cross_reference`, `amends`, `tests`, `references`. Symmetric and inverse types get their other
+direction written automatically so navigation works from both ends — except `tfidf`, where cosine is
+symmetric and a bulk run reaches the reverse edge on its own.
+
+This is deliberately the shape CROR's `rail-document-db` already exports: `from_kind`/`to_kind`,
+`link_type`, `confidence`, `origin`. Its 51,383 edges — 50,403 `similar` from tfidf, 944 `equivalent`
+from number matching, 36 `tests` from flashcards — map straight onto this table, with a rule and a
+flashcard both being documents.
+
+## Link previews, and the thing that makes them not work
+
+`cards` holds the definition — title, description, image, Twitter card kind — one row for the site
+and one per document, resolved **override-then-fallback at the field level**, so a document that sets
+only a title still inherits the site's image. Anything still missing is derived from the document, so
+a site gets usable cards without anybody authoring one.
+
+The image is a media slug (or an absolute URL). Bytes go in **SQLite, as media** — a card is ~100 KB,
+it belongs to the content, it should replicate with the database, and `/p/media/<slug>` already serves
+it. `idb-vfs-store` earns its keep streaming a 2 GB video with range reads; a preview image would
+gain nothing and split the media library across two stores.
+
+**But a crawler will never see a card this renderer produces.** Twitter, Slack, Facebook and iMessage
+fetch a URL with a plain HTTP client: they run no JavaScript, and a Service Worker is a browser
+facility that was never installed for them. A preview that exists only in our rendered HTML is
+invisible to precisely the audience it is for. So cards need two things, and both are load-bearing:
+
+1. the tags in the served HTML — `cardFor()` and the `layout` template — so view-source is honest;
+2. **static files**: the image at a real URL, and a stub per permalink carrying the same tags. See
+   `rheophile-web-cms/og.mjs`, which also makes shared permalinks work without the 404 shim.
+
+Without (2) the card is decoration.
+
+## Who is reading
+
+`RenderOptions.viewer` is `{signedIn, email?, name?, portal?}`, supplied by the shell and **never
+stored**. Authentication belongs to whatever owns the session; the renderer only needs enough to draw
+an account chip, and the schema has no session table for that reason.
+
+For rheophile.ca that owner is the Supabase-backed **appkit portal** at `/apps/`. Same origin, same
+project, so its token lands in the page's `localStorage` and the shell just reads it — no Supabase
+client, no keys, no network. See `rheophile-web-cms/src/session.ts`.
+
+At `file://` there is no shared origin and no portal, so there is no session: the chip renders as a
+plain Login link. That is the truth rather than a degraded mode — a Supabase session needs a server,
+and this runs without one.
+
+A `localStorage` read is a **UI hint, not authority**. Anything that actually needs protecting is
+protected by the per-document encryption below, not by whether a chip is drawn.
+
 ## Demand paging is the whole point
 
 Ordinary file-based SQLite reads and writes 4 KB pages as queries touch them. `sql.js` loads the
@@ -149,6 +208,7 @@ src/
 | `model/collections.ts` | blogs, books, shelves |
 | `model/relations.ts` | typed edges, and the "related" queries |
 | `model/query.ts` | the URL parameter vocabulary: parse, serialize, run, facet |
+| `model/cards.ts` | link-preview definitions, and why a crawler cannot see them |
 | `model/similarity.ts` | TF-IDF cosine — pure function plus a db-writing wrapper |
 | `model/taxonomy.ts` | categories and tags |
 | `model/media.ts` | the media library, as BLOBs |
@@ -169,7 +229,7 @@ src/
 
 | | what it answers |
 |---|---|
-| `npm test` | 31 Node tests: the model, routing, widgets, the query vocabulary, similarity, paging. Fast, no browser |
+| `npm test` | 34 Node tests: the model, routing, widgets, the query vocabulary, cards, edges, similarity, paging. Fast, no browser |
 | `npm run test:e2e` | 19 Chromium tests across both transports |
 | `npm run demo` | *Show me it working.* Drives the built app through 21 narrated steps, screenshots each one, prints measured values rather than ticks. `--headed` to watch. See [`demo/`](demo) |
 
