@@ -214,7 +214,7 @@ heading('3 · search returns the passage, not the entry');
 await step('FTS5 over parts, ranked by bm25, snippets marked', async () => {
   await page.frameLocator('#site').locator('input[name=q]').fill('ordinal');
   await page.frameLocator('#site').locator('input[name=q]').press('Enter');
-  await waitForTitle(page, /Search/);
+  await page.frameLocator('#site').locator('.postlist.passages').waitFor({ timeout: 30_000 });
   const frame = await siteFrame(page);
   const count = await frame.evaluate(
     () => document.querySelectorAll('.postlist.passages li').length,
@@ -231,6 +231,30 @@ await step('a hit deep-links to the part on its own URL', async () => {
   const url = await page.textContent('#site-url');
   assert.match(url, /\/part\//);
   return `${await shot(page, 'standalone-part')} — ${url.split(' ')[0]}`;
+});
+
+await step('the URL is the query — full text intersected with a tag', async () => {
+  // Straight to a parameterised URL, the way a shared link arrives.
+  await page.click('#site-home');
+  await siteFrame(page);
+  await page.frameLocator('#site').locator('input[name=q]').fill('pager');
+  await page.frameLocator('#site').locator('input[name=q]').press('Enter');
+  await page.frameLocator('#site').locator('.postlist.passages').waitFor({ timeout: 30_000 });
+  const wide = Number(
+    (await (await siteFrame(page)).textContent('.resultline')).match(/(\d+) passage/)[1],
+  );
+
+  // Clicking a facet adds a parameter; the result set narrows and the URL carries the whole query.
+  await page.frameLocator('#site').locator('.facet').first().locator('a.term').first().click();
+  await page.frameLocator('#site').locator('.chips').waitFor({ timeout: 30_000 });
+  const narrow = Number(
+    (await (await siteFrame(page)).textContent('.resultline')).match(/(\d+) passage/)[1],
+  );
+  const url = await page.textContent('#site-url');
+  assert.match(url, /q=pager/);
+  assert.match(url, /tag=|category=|kind=|type=/);
+  assert.ok(narrow > 0 && narrow <= wide);
+  return `${await shot(page, 'query-facets')} — ${wide} passages, ${narrow} after one facet`;
 });
 
 // ── 4. authoring + relatedness ───────────────────────────────────────────────────────────────

@@ -239,7 +239,7 @@ test('file://: FTS5 search runs from inside the rendered page', async () => {
   // "demand-paged" as demand+paged, so a prefix query for paging* misses the body entirely.
   await page.frameLocator('#site').locator('input[name=q]').fill('pager');
   await page.frameLocator('#site').locator('input[name=q]').press('Enter');
-  await waitForTitle(page, /Search/);
+  await page.frameLocator('#site').locator('.postlist.passages').waitFor({ timeout: 30_000 });
 
   const frame = await siteFrame(page);
   const body = await frame.textContent('body');
@@ -476,7 +476,7 @@ test('file://: a search result deep-links to the part it matched', async () => {
   // "ordinal" appears in one passage of one section of the seeded handbook.
   await page.frameLocator('#site').locator('input[name=q]').fill('ordinal');
   await page.frameLocator('#site').locator('input[name=q]').press('Enter');
-  await waitForTitle(page, /Search/);
+  await page.frameLocator('#site').locator('.postlist.passages').waitFor({ timeout: 30_000 });
 
   const frame = await siteFrame(page);
   assert.match(await frame.textContent('body'), /passage\(s\) for/);
@@ -601,6 +601,79 @@ test('file://: invalid part JSON is refused with a message, not silently dropped
   await page.click('#view');
   await waitForTitle(page, /About/);
   assert.match(await (await siteFrame(page)).textContent('body'), /demonstration of a CMS/);
+
+  assert.deepEqual(errors, []);
+  await context.close();
+});
+
+test('file://: the URL is the query — facets narrow it and it stays shareable', async () => {
+  const { page, context, errors } = await openShell(FILE_URL);
+  await siteFrame(page);
+
+  // Submitting the masthead box serializes the form into URL parameters.
+  await page.frameLocator('#site').locator('input[name=q]').fill('pager');
+  await page.frameLocator('#site').locator('input[name=q]').press('Enter');
+  await page.frameLocator('#site').locator('.postlist.passages').waitFor({ timeout: 30_000 });
+  assert.match(await page.textContent('#site-url'), /\/p\/query\/\?q=pager/);
+
+  // Clicking a tag facet adds a parameter and narrows the result set.
+  const before = Number(
+    (await (await siteFrame(page)).textContent('.resultline')).match(/(\d+) passage/)[1],
+  );
+  await page.frameLocator('#site').locator('.facet').first().locator('a.term').first().click();
+  await page.frameLocator('#site').locator('.chips').waitFor({ timeout: 30_000 });
+
+  const url = await page.textContent('#site-url');
+  assert.match(url, /q=pager/, 'the text query survives');
+  assert.match(url, /tag=|category=|kind=|type=/, 'the facet became a parameter');
+  const after = Number(
+    (await (await siteFrame(page)).textContent('.resultline')).match(/(\d+) passage/)[1],
+  );
+  assert.ok(after > 0 && after <= before, `narrowing should not widen: ${before} → ${after}`);
+
+  // The chip removes it again, returning to the previous URL.
+  await page.frameLocator('#site').locator('.chips a.term').first().click();
+  await page.waitForFunction(
+    () => !/tag=|category=|kind=|type=/.test(document.querySelector('#site-url')?.textContent ?? ''),
+    undefined,
+    { timeout: 30_000 },
+  );
+
+  // Grouping is a different view of the same query, not a different query.
+  await page.frameLocator('#site').getByRole('link', { name: 'documents' }).click();
+  await page.frameLocator('#site').locator('.postlist.grouped').waitFor({ timeout: 30_000 });
+  assert.match(await page.textContent('#site-url'), /group=documents/);
+
+  assert.deepEqual(errors, []);
+  await context.close();
+});
+
+test('http: a query URL is a real, shareable, fetchable thing', async () => {
+  const { page, context, errors } = await openShell(`${http.origin}/`);
+  await page.waitForFunction(
+    () => /service worker/.test(document.querySelector('#transport')?.textContent ?? ''),
+    undefined,
+    { timeout: 60_000 },
+  );
+  await siteFrame(page);
+
+  // The query page is served like any other: real status, real content type, from SQLite.
+  const res = await page.evaluate(async () => {
+    const r = await fetch('/p/query/?q=pager&tag=sqlite');
+    return { status: r.status, type: r.headers.get('content-type'), body: await r.text() };
+  });
+  assert.equal(res.status, 200);
+  assert.match(res.type, /text\/html/);
+  assert.match(res.body, /passage\(s\)/);
+  assert.match(res.body, /tag: sqlite/, 'the active filter is shown as a chip');
+
+  // Home with parameters is the same query.
+  const home = await page.evaluate(async () => {
+    const r = await fetch('/p/?q=pager&tag=sqlite');
+    return await r.text();
+  });
+  assert.match(home, /passage\(s\)/);
+  assert.match(home, /tag: sqlite/);
 
   assert.deepEqual(errors, []);
   await context.close();

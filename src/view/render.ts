@@ -21,12 +21,19 @@ import {
   type DocNode,
 } from '../model/documents.js';
 import { getMediaBySlug } from '../model/media.js';
+import { getPartByAnchor, listParts, type Part } from '../model/parts.js';
 import {
-  getPartByAnchor,
-  listParts,
-  searchParts,
-  type Part,
-} from '../model/parts.js';
+  EMPTY_QUERY,
+  groupByDocument,
+  isEmptyQuery,
+  parseQuery,
+  queryToString,
+  runQuery,
+  toggleTerm,
+  type FacetValue,
+  type Query,
+  type QueryPart,
+} from '../model/query.js';
 import { relatedDocuments, relatedParts } from '../model/relations.js';
 import { getSetting } from '../model/settings.js';
 import { pageStats } from '../model/schema.js';
@@ -53,7 +60,8 @@ export type Served =
 /** Recognised routes, in the order they are tried. */
 export type Route =
   | { name: 'index' }
-  | { name: 'search'; query: string }
+  /** Carries the raw query string; model/query.ts owns the parameter vocabulary. */
+  | { name: 'query'; search: string }
   | { name: 'archive'; kind: 'category' | 'tag'; slug: string }
   | { name: 'collection'; slug: string }
   | { name: 'media'; slug: string }
@@ -81,8 +89,14 @@ export function routeOf(path: string, base = '/'): Route {
   const segments = clean.split('/').filter(Boolean).map(decodeURIComponent);
 
   const [first, second, third] = segments;
-  if (!first || first === 'index.html') return { name: 'index' };
-  if (first === 'search') return { name: 'search', query: params.get('q') ?? '' };
+  if (!first || first === 'index.html') {
+    // Home doubles as the query page: any parameter turns it into one. `_` is excluded because the
+    // Service Worker transport appends it to bust the frame's own cache, and that is not a query.
+    const asked = [...params.keys()].some((key) => key !== '_');
+    return asked ? { name: 'query', search } : { name: 'index' };
+  }
+  // /p/search/ is kept as an alias so links made before the parameter vocabulary existed still work.
+  if (first === 'query' || first === 'search') return { name: 'query', search };
   if ((first === 'category' || first === 'tag') && second)
     return { name: 'archive', kind: first, slug: second };
   if (first === 'collection' && second) return { name: 'collection', slug: second };
@@ -135,12 +149,24 @@ const BRIDGE = /* html */ `
     ev.preventDefault();
     send({ type: 'cms:navigate', href: href });
   });
+  // A query form submits its whole self: every named field becomes a URL parameter, so the
+  // address bar ends up holding the entire query and a result set is a shareable link.
   document.addEventListener('submit', function (ev) {
     var form = ev.target;
-    if (!form || !form.hasAttribute('data-cms-search')) return;
-    ev.preventDefault();
-    var input = form.querySelector('input[name=q]');
-    send({ type: 'cms:search', q: input ? input.value : '' });
+    if (!form) return;
+    if (form.hasAttribute('data-cms-query') || form.hasAttribute('data-cms-search')) {
+      ev.preventDefault();
+      var params = new URLSearchParams();
+      var fields = form.querySelectorAll('[name]');
+      for (var i = 0; i < fields.length; i++) {
+        var field = fields[i];
+        if (field.disabled || !field.name) continue;
+        if ((field.type === 'checkbox' || field.type === 'radio') && !field.checked) continue;
+        if (field.value === '') continue;
+        params.append(field.name, field.value);
+      }
+      send({ type: 'cms:query', search: params.toString() });
+    }
   });
 })();
 </script>
@@ -329,28 +355,118 @@ export async function renderPath(db: Db, path: string, options: RenderOptions): 
       };
     }
 
-    case 'search': {
-      const passages = await searchParts(db, route.query);
-      const titles = await searchDocuments(db, route.query, 8);
-      const results = passages.map((hit) => ({
+    case 'query': {
+      const query = parseQuery(new URLSearchParams(route.search));
+      const result = await runQuery(db, query);
+      const titles = query.q ? await searchDocuments(db, query.q, 6) : [];
+
+      /** A URL for some variation on the current query — the whole UI is these links. */
+      const linkTo = (next: Query): string => {
+        const search = queryToString(next);
+        return `${base}query/${search ? `?${search}` : ''}`;
+      };
+
+      const facetGroup = (
+        field: 'tags' | 'categories' | 'kinds' | 'types',
+        values: readonly FacetValue[],
+      ) => {
+        const active = new Set(query[field] as string[]);
+        return values.map((value) => ({
+          ...value,
+          active: active.has(value.value),
+          url: linkTo(toggleTerm(query, field, value.value)),
+        }));
+      };
+
+      // snippet() wraps matches in «» — our own delimiters, so this substitution cannot collide
+      // with author markup. Escape first, then promote the delimiters to <mark>. With no
+      // full-text expression the snippet is a plain clip and simply has no delimiters to promote.
+      const decorate = (hit: QueryPart) => ({
         url: partUrl(base, hit.slug, hit.anchor),
         documentUrl: docUrl(base, hit),
         documentTitle: hit.title,
+        number: hit.number,
         kind: hit.kind,
-        // snippet() wraps matches in «» — our own delimiters, so this substitution cannot collide
-        // with author markup. Escape first, then promote the delimiters to <mark>.
+        type: hit.type,
+        created: formatDate(hit.created),
+        score: query.q ? hit.rank.toFixed(2) : '',
         snippet: escapeHtml(hit.snippet).replace(/«/g, '<mark>').replace(/»/g, '</mark>'),
-      }));
+      });
+
+      const shown = query.offset + result.parts.length;
+      const active = [
+        ...query.tags.map((value) => ({
+          label: `tag: ${value}`,
+          url: linkTo(toggleTerm(query, 'tags', value)),
+        })),
+        ...query.categories.map((value) => ({
+          label: `category: ${value}`,
+          url: linkTo(toggleTerm(query, 'categories', value)),
+        })),
+        ...query.kinds.map((value) => ({
+          label: `kind: ${value}`,
+          url: linkTo(toggleTerm(query, 'kinds', value)),
+        })),
+        ...query.types.map((value) => ({
+          label: `type: ${value}`,
+          url: linkTo(toggleTerm(query, 'types', value)),
+        })),
+        ...(query.collection
+          ? [{ label: `collection: ${query.collection}`, url: linkTo({ ...query, collection: '' }) }]
+          : []),
+      ];
+
       return {
         kind: 'html',
         status: 200,
         mime: HTML_MIME,
-        body: compose(templates, 'search', `Search: ${route.query}`, {
+        body: compose(templates, 'query', query.q ? `Query: ${query.q}` : 'Query', {
           ...ctx,
-          query: route.query,
-          results,
-          count: results.length,
+          // `query` is the raw text so the search box round-trips; `criteria` is the structure.
+          query: query.q,
+          criteria: query,
+          empty: isEmptyQuery(query),
+          results: result.parts.map(decorate),
+          groups:
+            query.group === 'documents'
+              ? groupByDocument(result.parts).map((group) => ({
+                  ...group,
+                  url: docUrl(base, group),
+                  created: formatDate(group.created),
+                  passages: group.passages.map(decorate),
+                }))
+              : [],
+          grouped: query.group === 'documents',
+          total: result.total,
+          shown,
+          from: result.parts.length ? query.offset + 1 : 0,
+          active,
+          facets: {
+            tags: facetGroup('tags', result.facets.tags),
+            categories: facetGroup('categories', result.facets.categories),
+            kinds: facetGroup('kinds', result.facets.kinds),
+            types: facetGroup('types', result.facets.types),
+          },
           titles: titles.map((t) => ({ ...t, url: docUrl(base, t) })),
+          sorts: (['relevance', 'newest', 'oldest'] as const)
+            // Relevance needs something to rank against.
+            .filter((sort) => sort !== 'relevance' || Boolean(query.q))
+            .map((sort) => ({
+              value: sort,
+              active: query.sort === sort,
+              url: linkTo({ ...query, sort, offset: 0 }),
+            })),
+          groupings: (['parts', 'documents'] as const).map((group) => ({
+            value: group,
+            active: query.group === group,
+            url: linkTo({ ...query, group }),
+          })),
+          prev:
+            query.offset > 0
+              ? linkTo({ ...query, offset: Math.max(0, query.offset - query.limit) })
+              : '',
+          next: shown < result.total ? linkTo({ ...query, offset: query.offset + query.limit }) : '',
+          clear: linkTo({ ...EMPTY_QUERY, limit: query.limit }),
         }),
       };
     }

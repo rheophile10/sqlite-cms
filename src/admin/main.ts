@@ -181,12 +181,16 @@ async function show(path: string, pushHistory = true): Promise<void> {
 
 function wireFrameBridge(): void {
   addEventListener('message', (event) => {
-    const data = event.data as { type?: string; href?: string; q?: string } | null;
+    const data = event.data as { type?: string; href?: string; q?: string; search?: string } | null;
     if (!data) return;
     if (data.type === 'cms:navigate' && typeof data.href === 'string') {
       void show(resolveHref(data.href, transport.base));
+    } else if (data.type === 'cms:query' && typeof data.search === 'string') {
+      // The form already serialized itself, so the URL is the query verbatim.
+      void show(`${transport.base}query/${data.search ? `?${data.search}` : ''}`);
     } else if (data.type === 'cms:search') {
-      void show(`${transport.base}search/?q=${encodeURIComponent(data.q ?? '')}`);
+      // An older theme that only knows about `q`.
+      void show(`${transport.base}query/?q=${encodeURIComponent(data.q ?? '')}`);
     }
   });
 

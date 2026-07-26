@@ -19,7 +19,7 @@ export type PageTemplateName =
   | 'collection'
   | 'part'
   | 'archive'
-  | 'search'
+  | 'query'
   | 'notfound'
   | 'style';
 
@@ -31,7 +31,7 @@ export const PAGE_TEMPLATES: PageTemplateName[] = [
   'collection',
   'part',
   'archive',
-  'search',
+  'query',
   'notfound',
   'style',
 ];
@@ -57,7 +57,8 @@ const LAYOUT = `<!doctype html>
     {{#each site.pages}}<a href="{{url}}">{{title}}</a>{{/each}}
     {{#each site.collections}}<a href="{{url}}">{{title}}</a>{{/each}}
   </nav>
-  <form class="searchbox" data-cms-search>
+  <!-- Every named field becomes a URL parameter, so a result set is a shareable link. -->
+  <form class="searchbox" data-cms-query action="{{site.home}}query/">
     <input type="search" name="q" value="{{query}}" placeholder="Search this site…" autocomplete="off">
   </form>
 </header>
@@ -189,31 +190,122 @@ const ARCHIVE = `<h1 class="page-title">{{term.name}}</h1>
 {{/if}}
 `;
 
-// Search returns *parts*, each linking to its own anchor, with the document it came from named
-// above it. Title matches are listed separately because they mean something different.
-const SEARCH = `<h1 class="page-title">Search</h1>
-{{#if query}}
-  <p class="meta">{{count}} passage(s) for &ldquo;{{query}}&rdquo; — ranked by <code>bm25()</code></p>
+// The query page. Every filter is a URL parameter, so this whole page is links: a facet is a link
+// that toggles one parameter, a sort is a link that changes one, and paging is a link that moves an
+// offset. No client state at all, and the address bar always holds the entire query.
+const QUERY = `<h1 class="page-title">{{#if query}}{{query}}{{else}}Query{{/if}}</h1>
+
+<form class="queryform" data-cms-query action="{{site.home}}query/">
+  <input type="search" name="q" value="{{query}}" placeholder="Full-text over passages…" autocomplete="off">
+  <div class="queryrow">
+    {{#each criteria.tags}}<input type="hidden" name="tag" value="{{.}}">{{/each}}
+    {{#each criteria.categories}}<input type="hidden" name="category" value="{{.}}">{{/each}}
+    {{#each criteria.kinds}}<input type="hidden" name="kind" value="{{.}}">{{/each}}
+    {{#each criteria.types}}<input type="hidden" name="type" value="{{.}}">{{/each}}
+    <label>terms
+      <select name="terms">
+        <option value="all">all of them</option>
+        <option value="any">any of them</option>
+      </select>
+    </label>
+    <label>group
+      <select name="group">
+        <option value="parts">passages</option>
+        <option value="documents">by entry</option>
+      </select>
+    </label>
+    <button type="submit">Query</button>
+  </div>
+</form>
+
+{{#if active}}
+<p class="chips">
+  {{#each active}}<a class="term on" href="{{url}}">{{label}} <span>&times;</span></a>{{/each}}
+  <a class="term" href="{{clear}}">clear all</a>
+</p>
+{{/if}}
+
+{{#if empty}}
+  <p class="empty">
+    Ask for something. <code>?q=</code> is full text over passages; <code>?tag=</code> and
+    <code>?category=</code> narrow by taxonomy; <code>?kind=</code> by part type;
+    <code>?type=</code> by document type. Combine as many as you like — the URL is the query.
+  </p>
+{{else}}
+  <p class="meta resultline">
+    {{total}} passage(s){{#if query}} for &ldquo;{{query}}&rdquo;{{/if}}{{#if from}} · showing {{from}}&ndash;{{shown}}{{/if}}
+    {{#if sorts}} · sort {{#each sorts}}<a class="term{{#if active}} on{{/if}}" href="{{url}}">{{value}}</a>{{/each}}{{/if}}
+    · view {{#each groupings}}<a class="term{{#if active}} on{{/if}}" href="{{url}}">{{value}}</a>{{/each}}
+  </p>
+
   {{#if titles}}
   <ul class="postlist titles">
     <li class="group">Matching titles</li>
     {{#each titles}}<li><h2><a href="{{url}}">{{#if number}}<span class="num">{{number}}</span> {{/if}}{{title}}</a></h2></li>{{/each}}
   </ul>
   {{/if}}
-  {{#if results}}
-  <ul class="postlist passages">
-    {{#each results}}
-    <li>
-      <p class="meta"><a href="{{documentUrl}}">{{documentTitle}}</a> · {{kind}}</p>
-      <p class="excerpt"><a href="{{url}}">{{{snippet}}}</a></p>
-    </li>
-    {{/each}}
-  </ul>
+
+  {{#if grouped}}
+    {{#if groups}}
+    <ul class="postlist grouped">
+      {{#each groups}}
+      <li>
+        <h2><a href="{{url}}">{{#if number}}<span class="num">{{number}}</span> {{/if}}{{title}}</a></h2>
+        <p class="meta">{{created}} · {{type}}</p>
+        <ul class="inner">
+          {{#each passages}}
+          <li><a href="{{url}}">{{{snippet}}}</a> <span class="rel">{{kind}}</span></li>
+          {{/each}}
+        </ul>
+      </li>
+      {{/each}}
+    </ul>
+    {{else}}
+    <p class="empty">Nothing matched.</p>
+    {{/if}}
   {{else}}
-  <p class="empty">No passages matched.</p>
+    {{#if results}}
+    <ul class="postlist passages">
+      {{#each results}}
+      <li>
+        <p class="meta">
+          <a href="{{documentUrl}}">{{#if number}}<span class="num">{{number}}</span> {{/if}}{{documentTitle}}</a>
+          · {{kind}} · {{created}}{{#if score}} <span class="rel">{{score}}</span>{{/if}}
+        </p>
+        <p class="excerpt"><a href="{{url}}">{{{snippet}}}</a></p>
+      </li>
+      {{/each}}
+    </ul>
+    {{else}}
+    <p class="empty">Nothing matched.</p>
+    {{/if}}
   {{/if}}
-{{else}}
-  <p class="empty">Type a query above. Prefix matching is on by default; <code>NEAR</code>, <code>OR</code> and <code>"quoted phrases"</code> work too.</p>
+
+  {{#if prev}}<a class="pager" href="{{prev}}">&larr; previous</a>{{/if}}
+  {{#if next}}<a class="pager" href="{{next}}">next &rarr;</a>{{/if}}
+
+  <aside class="facets">
+    {{#if facets.tags}}
+    <div class="facet"><h3>Tags</h3>
+      {{#each facets.tags}}<a class="term{{#if active}} on{{/if}}" href="{{url}}">{{label}} <span>{{count}}</span></a>{{/each}}
+    </div>
+    {{/if}}
+    {{#if facets.categories}}
+    <div class="facet"><h3>Categories</h3>
+      {{#each facets.categories}}<a class="term{{#if active}} on{{/if}}" href="{{url}}">{{label}} <span>{{count}}</span></a>{{/each}}
+    </div>
+    {{/if}}
+    {{#if facets.kinds}}
+    <div class="facet"><h3>Passage kinds</h3>
+      {{#each facets.kinds}}<a class="term{{#if active}} on{{/if}}" href="{{url}}">{{label}} <span>{{count}}</span></a>{{/each}}
+    </div>
+    {{/if}}
+    {{#if facets.types}}
+    <div class="facet"><h3>Document types</h3>
+      {{#each facets.types}}<a class="term{{#if active}} on{{/if}}" href="{{url}}">{{label}} <span>{{count}}</span></a>{{/each}}
+    </div>
+    {{/if}}
+  </aside>
 {{/if}}
 `;
 
@@ -307,6 +399,30 @@ a{color:var(--accent)}
 .content th,.content td{border-bottom:1px solid var(--rule);padding:7px 10px;text-align:left}
 mark{background:var(--mark);border-radius:2px;padding:0 2px}
 
+/* query page — every control is a link, so they are all styled as chips */
+.queryform{margin:22px 0 6px}
+.queryform input[type=search]{width:100%;padding:10px 13px;border:1px solid var(--rule);border-radius:8px;
+  background:transparent;color:var(--fg);font:16px/1.4 inherit}
+.queryrow{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:10px;
+  font:12px/1 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;color:var(--muted)}
+.queryrow label{display:flex;gap:5px;align-items:center;text-transform:uppercase;letter-spacing:.07em}
+.queryrow select{padding:5px 7px;border:1px solid var(--rule);border-radius:6px;background:transparent;
+  color:var(--fg);font:12px/1 inherit}
+.queryrow button{padding:6px 15px;border:1px solid var(--accent);border-radius:999px;background:transparent;
+  color:var(--accent);font:12px/1 inherit;font-weight:700;text-transform:uppercase;letter-spacing:.07em;cursor:pointer}
+.chips{margin:12px 0 0}
+.resultline{margin:18px 0 0}
+.term.on{border-color:var(--accent);color:var(--accent);background:color-mix(in srgb, var(--accent) 9%, transparent)}
+.pager{display:inline-block;margin:22px 14px 0 0;font-size:14px}
+.facets{margin-top:44px;padding-top:22px;border-top:1px solid var(--rule);
+  display:grid;gap:20px;grid-template-columns:repeat(auto-fit,minmax(210px,1fr))}
+.facet h3{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin:0 0 8px;
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+.postlist.grouped .inner{list-style:none;margin:10px 0 0;padding:0 0 0 14px;border-left:2px solid var(--rule)}
+.postlist.grouped .inner li{padding:5px 0;border:none;font-size:15px}
+.postlist.grouped .inner a{color:var(--fg);text-decoration:none}
+.postlist.grouped .inner a:hover{color:var(--accent)}
+
 /* structure */
 .toc{list-style:none;margin:26px 0 0;padding:0;font-size:16px}
 .toc li{padding:5px 0;border-top:1px solid var(--rule)}
@@ -346,7 +462,7 @@ const DEFAULT_PAGES: Record<PageTemplateName, string> = {
   collection: COLLECTION,
   part: PART,
   archive: ARCHIVE,
-  search: SEARCH,
+  query: QUERY,
   notfound: NOTFOUND,
   style: STYLE,
 };

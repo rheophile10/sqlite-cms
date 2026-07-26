@@ -34,9 +34,9 @@ npm install
 npm run dev        # vite dev server
 npm run build      # → docs/index.html (self-contained) + docs/sw.js + docs/404.html
 npm run serve      # static server, so the Service Worker path is reachable
-npm test           # model, routing, widgets, similarity, paging  (25 tests, Node)
-npm run test:e2e   # both transports in real Chromium            (17 tests)
-npm run demo       # narrated walkthrough + screenshots          (20 steps)
+npm test           # model, routing, widgets, query, similarity  (31 tests, Node)
+npm run test:e2e   # both transports in real Chromium            (19 tests)
+npm run demo       # narrated walkthrough + screenshots          (21 steps)
 ```
 
 Then either open `docs/index.html` by double-clicking it, or `npm run serve` and visit
@@ -70,7 +70,7 @@ Routes:
 /p/collection/<slug>/        a collection's table of contents, indented by depth
 /p/category/<slug>/          archive
 /p/tag/<slug>/               archive
-/p/search/?q=…               FTS5 over parts, ranked by bm25(), snippets marked
+/p/query/?…                  the query page — see below. /p/?… does the same
 /p/media/<slug>              raw bytes, with the stored MIME type
 ```
 
@@ -85,6 +85,31 @@ authored links survive. Scope is whole documents or individual parts.
 The algorithm is deliberately crude. Its docstring in the original anticipates the upgrade path and
 it still holds: when embeddings are available, keep this shape, add a vectors table, swap the vector
 source. `relations` and every consumer of it stay as they are.
+
+## The URL is the query
+
+Every filter is a URL parameter, so a result set is a link: shareable, bookmarkable, and
+back-button-able with no client state. Home doubles as the query page — `/p/?q=pager&tag=sqlite`
+and `/p/query/?q=pager&tag=sqlite` are the same thing.
+
+| parameter | |
+|---|---|
+| `q` | FTS5 over part text. Bare words become prefix terms; `NEAR`, `OR`, `"phrases"` pass through |
+| `tag`, `category` | slug; repeatable (`?tag=a&tag=b`) or comma-separated (`?tag=a,b`) |
+| `terms` | how to combine several of them — `all` (default) or `any` |
+| `type` | document type: `post`, `page`, `section`, `chapter`, `book`, `rule` |
+| `kind` | part kind: `prose`, `callout`, `code`, `table`, … |
+| `collection` | collection slug |
+| `sort` | `relevance` (default when `q` is present) · `newest` · `oldest` |
+| `group` | `parts` (default) or `documents` — folds the page of passages up to their entries |
+| `limit`, `offset` | paging; limit is clamped to 1–200 |
+
+Results are **passages**, each with its own URL. Facet counts are computed over the matching set
+rather than the whole site, so a filter that would return nothing is never offered — and every
+facet, sort and page control on the page is a plain link that toggles one parameter. There is no
+JavaScript state to get out of step with the address bar.
+
+`/p/search/?q=…` still works as an alias for links made before the vocabulary existed.
 
 ## Demand paging is the whole point
 
@@ -123,6 +148,7 @@ src/
 | `model/parts.ts` | parts: typed payloads, derived text, part-level search |
 | `model/collections.ts` | blogs, books, shelves |
 | `model/relations.ts` | typed edges, and the "related" queries |
+| `model/query.ts` | the URL parameter vocabulary: parse, serialize, run, facet |
 | `model/similarity.ts` | TF-IDF cosine — pure function plus a db-writing wrapper |
 | `model/taxonomy.ts` | categories and tags |
 | `model/media.ts` | the media library, as BLOBs |
@@ -143,9 +169,9 @@ src/
 
 | | what it answers |
 |---|---|
-| `npm test` | 25 Node tests: the model, routing, widgets, similarity, paging. Fast, no browser |
-| `npm run test:e2e` | 17 Chromium tests across both transports |
-| `npm run demo` | *Show me it working.* Drives the built app through 20 narrated steps, screenshots each one, prints measured values rather than ticks. `--headed` to watch. See [`demo/`](demo) |
+| `npm test` | 31 Node tests: the model, routing, widgets, the query vocabulary, similarity, paging. Fast, no browser |
+| `npm run test:e2e` | 19 Chromium tests across both transports |
+| `npm run demo` | *Show me it working.* Drives the built app through 21 narrated steps, screenshots each one, prints measured values rather than ticks. `--headed` to watch. See [`demo/`](demo) |
 
 ## The theme is data
 
@@ -179,7 +205,7 @@ primitives. What *is* implemented is the consequence that is easy to get wrong: 
 contributes the empty string to the FTS index, never its text. An index over content the reader
 cannot decrypt would leak it — `snippet()` would happily quote it back.
 
-## Seven things that will bite you
+## Eight things that will bite you
 
 Each of these cost real debugging time and is verified by a test.
 
@@ -218,7 +244,12 @@ the shell bytes at `/p/hello-world/`, so `new URL('./', location.href)` reports 
 directory, and everything derived from it — the content base, the `sw.js` registration path — comes
 out wrong. The shell directory has to be recovered from the content segment instead.
 
-**7. `[hidden]` loses to a class.** `.admin { display:flex }` outranks the UA stylesheet's
+**7. `Number(null)` is `0`, and `0` is finite.** A `Number.isFinite` guard therefore cannot tell an
+absent URL parameter from a real zero. `?limit=` missing fell straight through the guard and got
+clamped to the *minimum*, so every query page returned exactly one result. Absent has to be checked
+before coercing.
+
+**8. `[hidden]` loses to a class.** `.admin { display:flex }` outranks the UA stylesheet's
 `[hidden] { display:none }`, so hiding the admin for a standalone permalink silently did nothing
 until `.admin[hidden]` said so explicitly.
 

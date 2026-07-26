@@ -50,6 +50,15 @@ const { renderTemplate, escapeHtml } = await import(B + 'view/template.js');
 const { seedTheme, getTemplate, setTemplate, loadTemplates } = await import(B + 'view/theme.js');
 const { seedSettings, setSetting } = await import(B + 'model/settings.js');
 const { seedContent } = await import(B + 'model/seed.js');
+const {
+  parseQuery,
+  queryToString,
+  runQuery,
+  toggleTerm,
+  groupByDocument,
+  isEmptyQuery,
+  EMPTY_QUERY,
+} = await import(B + 'model/query.js');
 
 const OPTIONS = { base: '/p/', transport: 'test' };
 
@@ -97,8 +106,18 @@ test('routeOf maps paths to routes, base and trailing slashes optional', () => {
     anchor: 'the-shape',
   });
 
-  assert.deepEqual(routeOf('/p/search/?q=sqlite', '/p/'), { name: 'search', query: 'sqlite' });
-  assert.deepEqual(routeOf('/p/search/', '/p/'), { name: 'search', query: '' });
+  // The query page, and /p/search/ kept as an alias for links made before it existed.
+  assert.deepEqual(routeOf('/p/query/?q=sqlite&tag=wasm', '/p/'), {
+    name: 'query',
+    search: 'q=sqlite&tag=wasm',
+  });
+  assert.deepEqual(routeOf('/p/search/?q=sqlite', '/p/'), { name: 'query', search: 'q=sqlite' });
+  assert.deepEqual(routeOf('/p/query/', '/p/'), { name: 'query', search: '' });
+
+  // Home doubles as the query page when given parameters, but the frame's cache-buster is not one.
+  assert.deepEqual(routeOf('/p/?q=pager', '/p/'), { name: 'query', search: 'q=pager' });
+  assert.deepEqual(routeOf('/p/?tag=sqlite', '/p/'), { name: 'query', search: 'tag=sqlite' });
+  assert.deepEqual(routeOf('/p/?_=1234', '/p/'), { name: 'index' });
 
   // A deployment under a sub-path resolves identically.
   assert.deepEqual(routeOf('/sqlite-cms/docs/p/about/', '/sqlite-cms/docs/p/'), {
@@ -110,7 +129,9 @@ test('routeOf maps paths to routes, base and trailing slashes optional', () => {
 
 test('routeOf does not mistake a sibling path for the content base', () => {
   assert.deepEqual(routeOf('/painting/', '/p/'), { name: 'document', slug: 'painting' });
-  assert.deepEqual(routeOf('/p?q=1', '/p/'), { name: 'index' });
+  // The bare base with a parameter is the base, queried — not a document called 'p'.
+  assert.deepEqual(routeOf('/p?q=1', '/p/'), { name: 'query', search: 'q=1' });
+  assert.deepEqual(routeOf('/p', '/p/'), { name: 'index' });
 });
 
 // ────────────────────────────────── template engine ──────────────────────────────────
@@ -307,7 +328,7 @@ test('search returns parts, ranked, with the document they belong to', async () 
   assert.ok(first.rank <= 0, 'bm25 ranks are negative');
 
   // The same query as a rendered page links to the part, not just the document.
-  const page = await html(db, '/p/search/?q=ordinal');
+  const page = await html(db, '/p/query/?q=ordinal');
   assert.match(page.body, /\/part\//, 'results should deep-link to a part');
   assert.match(page.body, /<mark>/);
 
@@ -761,4 +782,196 @@ test('content survives close and reopen', async () => {
   );
   assert.match((await html(reopened, '/p/written-before-the-reopen/')).body, /durable/);
   await reopened.close();
+});
+
+// ─────────────────────────────── querying by URL parameter ───────────────────────────────
+
+test('parseQuery reads the parameter vocabulary, and tolerates nonsense', () => {
+  const q = parseQuery(
+    new URLSearchParams('q=pager&tag=sqlite&tag=wasm&category=Notes&type=post&kind=prose&terms=any&sort=oldest&group=documents&limit=5&offset=10'),
+  );
+  assert.equal(q.q, 'pager');
+  assert.deepEqual(q.tags, ['sqlite', 'wasm']);
+  assert.deepEqual(q.categories, ['notes'], 'slugs are lowercased');
+  assert.deepEqual(q.types, ['post']);
+  assert.deepEqual(q.kinds, ['prose']);
+  assert.equal(q.termMode, 'any');
+  assert.equal(q.sort, 'oldest');
+  assert.equal(q.group, 'documents');
+  assert.equal(q.limit, 5);
+  assert.equal(q.offset, 10);
+
+  // Repeatable or comma-separated, and duplicates collapse.
+  assert.deepEqual(parseQuery(new URLSearchParams('tag=a,b&tag=b')).tags, ['a', 'b']);
+
+  // Nonsense falls back rather than throwing: a URL is user input.
+  const junk = parseQuery(new URLSearchParams('type=wombat&limit=99999&offset=-4&sort=sideways'));
+  assert.deepEqual(junk.types, [], 'unknown document types are dropped');
+  assert.equal(junk.limit, 200, 'limit is clamped');
+  assert.equal(junk.offset, 0);
+  assert.equal(junk.sort, 'newest', 'relevance needs something to rank against');
+
+  // Relevance is implied when there is a full-text expression.
+  assert.equal(parseQuery(new URLSearchParams('q=x')).sort, 'relevance');
+  assert.ok(isEmptyQuery(parseQuery(new URLSearchParams(''))));
+  assert.ok(!isEmptyQuery(parseQuery(new URLSearchParams('tag=x'))));
+});
+
+test('queryToString round-trips and omits defaults', () => {
+  const original = parseQuery(new URLSearchParams('q=pager&tag=sqlite&tag=wasm&terms=any&group=documents'));
+  const round = parseQuery(new URLSearchParams(queryToString(original)));
+  assert.deepEqual(round, original, 'a query must survive a trip through a URL');
+
+  // Defaults are left out so the URL stays legible.
+  assert.equal(queryToString(parseQuery(new URLSearchParams('q=x&sort=relevance&limit=30'))), 'q=x');
+  assert.equal(queryToString(EMPTY_QUERY), '');
+
+  // toggleTerm adds, removes, and resets paging.
+  const one = toggleTerm(parseQuery(new URLSearchParams('offset=60')), 'tags', 'sqlite');
+  assert.deepEqual(one.tags, ['sqlite']);
+  assert.equal(one.offset, 0, 'changing a filter must return to the first page');
+  assert.deepEqual(toggleTerm(one, 'tags', 'sqlite').tags, [], 'toggles off');
+});
+
+test('runQuery combines FTS5 with tag filters', async () => {
+  const db = await site('t-query', { seed: false });
+
+  const make = async (title, tags, html, kind = 'prose') => {
+    const id = await createDocument(db, { title, status: 'published' });
+    await setParts(db, id, [{ kind, data: { html } }]);
+    if (tags.length) await setDocumentTerms(db, id, 'tag', tags);
+    return id;
+  };
+  await make('Alpha', ['sqlite', 'wasm'], '<p>the pager reads pages on demand</p>');
+  await make('Beta', ['sqlite'], '<p>the pager writes pages back in a batch</p>');
+  await make('Gamma', ['wasm'], '<p>asyncify suspends the pager mid-statement</p>');
+  await make('Delta', [], '<p>nothing about paging at all, only signals</p>');
+  await make('Epsilon', ['sqlite'], 'SELECT * FROM pager', 'code');
+
+  const run = (search) => runQuery(db, parseQuery(new URLSearchParams(search)));
+
+  // Full text alone.
+  const text = await run('q=pager');
+  assert.equal(text.total, 4, 'four passages mention the pager');
+  assert.ok(text.parts.every((p) => p.rank <= 0), 'ranked by bm25');
+
+  // Tag alone.
+  assert.equal((await run('tag=sqlite')).total, 3);
+
+  // Intersected — this is the combination the whole feature exists for.
+  const both = await run('q=pager&tag=sqlite');
+  assert.equal(both.total, 3, 'pager AND tagged sqlite');
+  assert.ok(!both.parts.some((p) => p.title === 'Gamma'), 'Gamma is not tagged sqlite');
+  assert.ok(!both.parts.some((p) => p.title === 'Delta'), 'Delta does not mention the pager');
+
+  // Several tags: all of them by default, any of them on request.
+  assert.equal((await run('tag=sqlite&tag=wasm')).total, 1, 'AND across tags');
+  assert.equal((await run('tag=sqlite&tag=wasm&terms=any')).total, 4, 'OR across tags');
+
+  // Part kind narrows to the passage type.
+  const code = await run('q=pager&kind=code');
+  assert.equal(code.total, 1);
+  assert.equal(code.parts[0].kind, 'code');
+
+  // Facets count over the matching set, not the whole site.
+  const facets = (await run('q=pager')).facets;
+  const tagCounts = Object.fromEntries(facets.tags.map((f) => [f.value, f.count]));
+  assert.equal(tagCounts.sqlite, 3);
+  assert.equal(tagCounts.wasm, 2);
+  assert.ok(facets.kinds.some((f) => f.value === 'code' && f.count === 1));
+
+  // A malformed FTS5 expression is empty, not an exception.
+  const broken = await run('q=%22unclosed');
+  assert.equal(broken.total, 0);
+  assert.deepEqual(broken.parts, []);
+  await db.close();
+});
+
+test('runQuery paginates, sorts, and never surfaces sealed or unpublished parts', async () => {
+  const db = await site('t-query2', { seed: false });
+  for (let i = 0; i < 7; i++) {
+    const id = await createDocument(db, { title: `Doc ${i}`, status: 'published' });
+    await setParts(db, id, [{ kind: 'prose', data: { html: `<p>widget number ${i}</p>` } }]);
+  }
+  const draft = await createDocument(db, { title: 'Draft', status: 'draft' });
+  await setParts(db, draft, [{ kind: 'prose', data: { html: '<p>widget hidden away</p>' } }]);
+  const secret = await createDocument(db, { title: 'Sealed', status: 'published' });
+  await setParts(db, secret, [{ kind: 'sealed', data: { ciphertext: 'AAA' }, text: '' }]);
+
+  const run = (search) => runQuery(db, parseQuery(new URLSearchParams(search)));
+
+  const first = await run('q=widget&limit=3');
+  assert.equal(first.total, 7, 'the draft must not be counted');
+  assert.equal(first.parts.length, 3, 'limit applies to the page, not the total');
+
+  const second = await run('q=widget&limit=3&offset=3');
+  assert.equal(second.parts.length, 3);
+  const overlap = first.parts.filter((a) => second.parts.some((b) => b.part_id === a.part_id));
+  assert.deepEqual(overlap, [], 'pages must not overlap');
+
+  // Sorting by date is stable and reversible.
+  const newest = await run('sort=newest&limit=50');
+  const oldest = await run('sort=oldest&limit=50');
+  assert.equal(newest.total, oldest.total);
+  assert.deepEqual(
+    newest.parts.map((p) => p.part_id).slice().reverse().sort(),
+    oldest.parts.map((p) => p.part_id).slice().sort(),
+    'the same set either way',
+  );
+
+  // Sealed parts are never in a result set, even asked for by name.
+  assert.equal((await run('kind=sealed')).total, 0);
+  assert.ok(!(await run('limit=50')).parts.some((p) => p.title === 'Sealed'));
+  await db.close();
+});
+
+test('groupByDocument folds passages up, preserving rank order', () => {
+  const parts = [
+    { part_id: 1, document_id: 10, slug: 'a', title: 'A', number: '', type: 'post', created: '', anchor: 'x', kind: 'prose', text: '', snippet: '', rank: -3 },
+    { part_id: 2, document_id: 11, slug: 'b', title: 'B', number: '', type: 'post', created: '', anchor: 'y', kind: 'prose', text: '', snippet: '', rank: -2 },
+    { part_id: 3, document_id: 10, slug: 'a', title: 'A', number: '', type: 'post', created: '', anchor: 'z', kind: 'prose', text: '', snippet: '', rank: -1 },
+  ];
+  const groups = groupByDocument(parts);
+  assert.deepEqual(groups.map((g) => g.document_id), [10, 11], 'first-seen order is rank order');
+  assert.equal(groups[0].passages.length, 2);
+  assert.deepEqual(groups[0].passages.map((p) => p.anchor), ['x', 'z']);
+  assert.deepEqual(groupByDocument([]), []);
+});
+
+test('the query page renders facets, chips and paging as links', async () => {
+  const db = await site('t-querypage');
+
+  // Home with no parameters is the index; with parameters it is a query.
+  assert.match((await html(db, '/p/')).body, /class="postlist"/);
+  const fromHome = await html(db, '/p/?q=pager');
+  assert.match(fromHome.body, /passage\(s\)/, 'home with parameters queries the database');
+
+  const page = await html(db, '/p/query/?q=pager&tag=sqlite');
+  // The active filter is a chip that links to the query without it.
+  assert.match(page.body, /tag: sqlite/);
+  assert.match(page.body, /clear all/);
+  // Facets are links that toggle a parameter.
+  // & is escaped inside an attribute — correct HTML, and what the browser un-escapes on click.
+  assert.match(page.body, /href="\/p\/query\/\?q=pager"/, 'a facet link that drops the tag');
+  assert.doesNotMatch(page.body, /limit=1(?![0-9])/, 'an absent limit must not become 1');
+  // The form round-trips the text and carries the other criteria as hidden fields.
+  assert.match(page.body, /value="pager"/);
+  assert.match(page.body, /name="tag" value="sqlite"/);
+  assert.match(page.body, /data-cms-query/);
+
+  // Grouped view is the same results, folded.
+  const grouped = await html(db, '/p/query/?q=pager&group=documents');
+  assert.match(grouped.body, /class="postlist grouped"/);
+
+  // An empty query explains itself rather than showing zero results.
+  const bare = await html(db, '/p/query/');
+  assert.match(bare.body, /Ask for something/);
+
+  // Paging appears only when there is another page to go to.
+  const limited = await html(db, '/p/query/?q=the&limit=1');
+  assert.match(limited.body, /next/);
+  assert.doesNotMatch(limited.body, /previous/);
+  const second = await html(db, '/p/query/?q=the&limit=1&offset=1');
+  assert.match(second.body, /previous/);
+  await db.close();
 });
