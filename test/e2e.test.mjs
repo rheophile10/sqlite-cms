@@ -678,3 +678,39 @@ test('http: a query URL is a real, shareable, fetchable thing', async () => {
   assert.deepEqual(errors, []);
   await context.close();
 });
+
+test('file://: pasting an idea finds the passage that says it differently', async () => {
+  const { page, context, errors } = await openShell(FILE_URL);
+  await siteFrame(page);
+
+  // Get to the query page, which is where the paste field lives.
+  await page.frameLocator('#site').locator('input[name=q]').first().fill('pager');
+  await page.frameLocator('#site').locator('input[name=q]').first().press('Enter');
+  await page.frameLocator('#site').locator('.queryform').waitFor({ timeout: 30_000 });
+
+  // A paraphrase: none of this wording is in the seeded corpus.
+  const paste = page.frameLocator('#site').locator('textarea[name=like]');
+  await paste.fill(
+    'we wanted the database to read individual pages on demand instead of loading the whole file ' +
+      'into memory before answering a query',
+  );
+  await page.frameLocator('#site').locator('input[name=q]').first().fill('');
+  await page.frameLocator('#site').getByRole('button', { name: 'Query' }).click();
+  await page.frameLocator('#site').locator('.postlist.passages').waitFor({ timeout: 30_000 });
+
+  const frame = await siteFrame(page);
+  // The derived terms are shown, so a hit is explained rather than asserted.
+  const matched = await frame.textContent('.matched');
+  assert.match(matched, /matched on/);
+  assert.match(matched, /database|pages|memory/);
+
+  const body = await frame.textContent('body');
+  assert.match(body, /passage\(s\)/);
+  assert.match(body, /Demand paging/, 'the paging entry should surface from a paraphrase');
+
+  // The whole paste is in the URL, so the result set is still a link.
+  assert.match(await page.textContent('#site-url'), /like=/);
+
+  assert.deepEqual(errors, []);
+  await context.close();
+});

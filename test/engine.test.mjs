@@ -334,7 +334,10 @@ test('search returns parts, ranked, with the document they belong to', async () 
   assert.match(page.body, /<mark>/);
 
   assert.equal((await searchParts(db, '')).length, 0);
-  assert.ok((await searchParts(db, 'ordina')).length > 0, 'bare words prefix-match');
+  // A complete word always matches, which is what the exact-OR-prefix expression guarantees.
+  assert.ok((await searchParts(db, 'ordinal')).length > 0, 'a complete word matches');
+  // And stemming means a *different* inflection of it matches too — the whole point.
+  assert.ok((await searchParts(db, 'ordinals')).length > 0, 'an inflection matches via the stemmer');
   assert.ok((await searchParts(db, 'ordinal OR paging')).length > 0, 'operators pass through');
 
   // Title search is a separate index.
@@ -1109,5 +1112,139 @@ test('a viewer is rendered from what the shell supplies, never from the database
     Number(await db.scalar(`SELECT count(*) FROM sqlite_schema WHERE name LIKE '%session%'`)),
     0,
   );
+  await db.close();
+});
+
+// ───────────────────── query by text: "have we tried this before?" ─────────────────────
+
+test('likeExpression reduces pasted text to the words worth searching for', async () => {
+  const { likeExpression } = await import(B + 'model/query.js');
+
+  const { expression, terms } = likeExpression(
+    'The pager reads and writes four kilobyte pages as queries touch them, so the pager never has ' +
+      'to load the whole database into memory.',
+  );
+  // Stop words are gone; the repeated content word leads.
+  assert.equal(terms[0], 'pager', `expected pager first, got ${terms.join(', ')}`);
+  assert.ok(terms.includes('pages'));
+  assert.ok(!terms.includes('the'));
+  assert.ok(!terms.includes('and'));
+  // OR-ed and quoted, so pasted prose full of hyphens and colons cannot be read as FTS5 syntax.
+  assert.match(expression, /^"pager" OR /);
+  assert.ok(!expression.includes('*'));
+
+  // Text that is only stop words yields nothing rather than a broken expression.
+  assert.deepEqual(likeExpression('the and of a an').terms, []);
+  assert.equal(likeExpression('').expression, '');
+
+  // Capped, so one long paste cannot produce an enormous expression.
+  const many = likeExpression('alpha beta gamma delta epsilon zeta eta theta iota kappa lambda ' +
+    'mu nu xi omicron pi rho sigma tau upsilon', 5);
+  assert.equal(many.terms.length, 5);
+
+  // Syntax in the input is neutralised — this must not throw when it reaches the engine.
+  const nasty = likeExpression('NEAR("unclosed AND -x* OR :y');
+  assert.ok(!nasty.expression.includes('NEAR('));
+});
+
+test('?like= finds the passage that says the same thing in other words', async () => {
+  const db = await site('t-like', { seed: false });
+
+  const make = async (title, html) => {
+    const id = await createDocument(db, { title, status: 'published' });
+    await setParts(db, id, [{ kind: 'prose', data: { html } }]);
+    return id;
+  };
+  await make(
+    'Paging',
+    '<p>The pager faults in individual four kilobyte pages as queries touch them, so a database ' +
+      'larger than memory still works.</p>',
+  );
+  await make(
+    'Signals',
+    '<p>Railway signal aspects govern the movement of trains through interlocking plants.</p>',
+  );
+  await make(
+    'Asyncify',
+    '<p>Asyncify suspends the wasm stack at an await point, which is what lets a VFS be ' +
+      'asynchronous without SharedArrayBuffer.</p>',
+  );
+
+  const run = (search) => runQuery(db, parseQuery(new URLSearchParams(search)));
+
+  // Paste a paraphrase — none of these exact sentences are in the corpus.
+  const pasted = encodeURIComponent(
+    'we needed the database to read individual pages on demand rather than loading the whole file',
+  );
+  const like = await run(`like=${pasted}`);
+  assert.ok(like.total > 0, 'expected the paraphrase to find something');
+  assert.equal(like.parts[0].title, 'Paging', `top hit was ${like.parts[0].title}`);
+  // The derived terms are reported, so a hit can be explained.
+  assert.ok(like.terms.includes('database'));
+  assert.ok(!like.terms.includes('the'));
+  // Relevance is implied by `like`, exactly as it is by `q`.
+  assert.equal(like.query.sort, 'relevance');
+  assert.ok(like.parts[0].rank <= 0, 'ranked by bm25');
+
+  // Unrelated text finds nothing rather than everything.
+  const unrelated = await run(`like=${encodeURIComponent('a recipe for sourdough bread starter')}`);
+  assert.equal(unrelated.total, 0);
+
+  // `like` composes with the other filters rather than replacing them.
+  const narrowed = await run(`like=${pasted}&kind=code`);
+  assert.equal(narrowed.total, 0, 'no code parts in this corpus');
+
+  // And with q: the words you insisted on, among the passages that look like what you pasted.
+  const both = await run(`q=asyncify&like=${pasted}`);
+  assert.equal(both.total, 0, 'asyncify does not appear in the paging passage');
+  const bothHit = await run(`q=pages&like=${pasted}`);
+  assert.ok(bothHit.total > 0);
+
+  // Text that reduces to nothing behaves like no query at all, not like a broken one.
+  const empty = await run(`like=${encodeURIComponent('the and of a an')}`);
+  assert.ok(empty.total >= 0);
+  await db.close();
+});
+
+test('stemming finds a different inflection than the one that was written', async () => {
+  const db = await site('t-stem', { seed: false });
+  const id = await createDocument(db, { title: 'Stemming', status: 'published' });
+  await setParts(db, id, [
+    { kind: 'prose', data: { html: '<p>SQLite is demand-paged: the pager reads pages on demand.</p>' } },
+  ]);
+
+  // The exact miss that motivated the change: the text says "demand-paged", never "paging".
+  assert.ok((await searchParts(db, 'paging')).length > 0, 'paging should find demand-paged');
+  assert.ok((await searchParts(db, 'read')).length > 0, 'read should find reads');
+  assert.ok((await searchParts(db, 'page')).length > 0);
+  // And it has not become a match-everything: an unrelated word still misses.
+  assert.equal((await searchParts(db, 'interlocking')).length, 0);
+  await db.close();
+});
+
+test('an index built before stemming is rebuilt, not left behind', async () => {
+  // The risk: every FTS table is CREATE ... IF NOT EXISTS, so a database made before the tokenizer
+  // changed would keep its literal index forever and quietly behave differently from a fresh one.
+  const { migrateFtsTokenizer } = await import(B + 'model/schema.js');
+  const db = await openDatabase({ idbName: 't-tokenizer' });
+  await migrate(db);
+  await seedTheme(db);
+  await seedSettings(db);
+
+  const id = await createDocument(db, { title: 'Legacy', status: 'published' });
+  await setParts(db, id, [{ kind: 'prose', data: { html: '<p>the pager reads pages</p>' } }]);
+
+  // Force the old shape back: drop the stemmed index and recreate it unstemmed.
+  await db.exec(`DROP TABLE parts_fts`);
+  await db.exec(`CREATE VIRTUAL TABLE parts_fts USING fts5(text, content='parts', content_rowid='id')`);
+  await db.exec(`INSERT INTO parts_fts(parts_fts) VALUES('rebuild')`);
+  assert.equal((await searchParts(db, 'paging')).length, 0, 'unstemmed, as expected');
+
+  const rebuilt = await migrateFtsTokenizer(db);
+  assert.deepEqual(rebuilt, ['parts_fts'], 'only the stale index should be rebuilt');
+  assert.ok((await searchParts(db, 'paging')).length > 0, 'stemmed after the migration');
+
+  // Idempotent: a second run finds nothing to do.
+  assert.deepEqual(await migrateFtsTokenizer(db), []);
   await db.close();
 });

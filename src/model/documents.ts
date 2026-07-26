@@ -379,15 +379,30 @@ export async function reorder(db: Db, id: number, direction: -1 | 1): Promise<vo
 const FTS5_OPERATORS = new Set(['AND', 'OR', 'NOT', 'NEAR']);
 
 /**
- * Make typing feel live: bare words become prefix terms (`sqlite` → `"sqlite"*`). Anything that
- * looks like real FTS5 syntax — quotes, parens, `*`, `-`, `:`, or a bare operator keyword — is
- * passed through untouched so the query language stays available.
+ * Turn plain words into an FTS5 expression. Anything that looks like real FTS5 syntax — quotes,
+ * parens, `*`, `-`, `:`, or a bare operator keyword — is passed through untouched so the query
+ * language stays available.
+ *
+ * Each word becomes `("word" OR "word"*)`: the exact form and the prefix form, OR-ed. The exact form
+ * is there because the index is **stemmed**, and prefix matching against a stemmed index is
+ * inherently patchy — the stem is shorter than the word, so a typed prefix longer than the stem can
+ * never match. Measured against this build: for "paging", 3 characters hits, 4 and 5 miss, 6 hits;
+ * for "tokenizer", 6 and 7 miss. A complete word always hits, which is why it is OR-ed in.
+ *
+ * The consequence worth knowing: type-ahead on a *partial* word is unreliable here, and truncating
+ * the prefix does not rescue it. If live type-ahead ever matters more than finding "demand-paged"
+ * from "paging", the tool is a second index on FTS5's `trigram` tokenizer — available in this build —
+ * not giving up stemming.
+ *
+ * Groups are juxtaposed, which FTS5 reads as AND: every word must appear somehow.
  */
 export function toMatchExpression(query: string): string {
-  const tokens = query.split(/\s+/);
+  const tokens = query.split(/\s+/).filter(Boolean);
   const isPlainWords = /^[\w\s]+$/.test(query) && !tokens.some((t) => FTS5_OPERATORS.has(t));
-  return isPlainWords ? tokens.map((word) => `"${word}"*`).join(' ') : query;
+  if (!isPlainWords) return query;
+  return tokens.map((word) => `("${word}" OR "${word}"*)`).join(' ');
 }
+
 
 export interface DocHit {
   id: number;

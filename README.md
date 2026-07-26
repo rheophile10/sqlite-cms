@@ -34,8 +34,8 @@ npm install
 npm run dev        # vite dev server
 npm run build      # → docs/index.html (self-contained) + docs/sw.js + docs/404.html
 npm run serve      # static server, so the Service Worker path is reachable
-npm test           # model, routing, widgets, query, cards, edges  (34 tests, Node)
-npm run test:e2e   # both transports in real Chromium            (19 tests)
+npm test           # model, routing, widgets, query, cards, edges  (38 tests, Node)
+npm run test:e2e   # both transports in real Chromium            (20 tests)
 npm run demo       # narrated walkthrough + screenshots          (21 steps)
 ```
 
@@ -95,7 +95,8 @@ and `/p/query/?q=pager&tag=sqlite` are the same thing.
 
 | parameter | |
 |---|---|
-| `q` | FTS5 over part text. Bare words become prefix terms; `NEAR`, `OR`, `"phrases"` pass through |
+| `like` | **arbitrary text.** Paste an idea, an error, a paragraph — get the passages closest to it |
+| `q` | FTS5 over part text; `NEAR`, `OR`, `"phrases"` pass through |
 | `tag`, `category` | slug; repeatable (`?tag=a&tag=b`) or comma-separated (`?tag=a,b`) |
 | `terms` | how to combine several of them — `all` (default) or `any` |
 | `type` | document type: `post`, `page`, `section`, `chapter`, `book`, `rule` |
@@ -170,6 +171,38 @@ and this runs without one.
 A `localStorage` read is a **UI hint, not authority**. Anything that actually needs protecting is
 protected by the per-document encryption below, not by whether a chip is drawn.
 
+## Finding out whether you tried this before
+
+Two things aimed at that question specifically.
+
+**`?like=<text>`.** Paste a paragraph and get ranked passages. The implementation is smaller than it
+sounds, because **`bm25()` already weights by inverse document frequency**: strip the stop words,
+keep the most repeated content words, OR them together, and let the engine's own ranking decide. No
+corpus in memory, no model, no vectors. The derived terms come back with the results and the page
+shows them — *matched on `database` `pages` `memory`* — because an unexplained similarity hit is not
+worth much.
+
+Composes with everything else: `?like=…&kind=code`, or with `q` for "the words I insisted on, among
+the passages that look like what I pasted". The whole paste lives in the URL, so a result set is
+still a link.
+
+**Stemming.** Both FTS indexes use FTS5's `porter` tokenizer. Without it a search is morphologically
+literal — measured against this build, `paging` found *nothing* in text that says "demand-paged", and
+`read` found nothing in text that says "reads". Both are one hit with it.
+
+That trade has a cost worth stating plainly. Prefix matching against a stemmed index is **inherently
+patchy**: the stem is shorter than the word, so a typed prefix longer than the stem can never match.
+Measured: for "paging", 3 characters hits, 4 and 5 miss, 6 hits; for "tokenizer", 6 and 7 miss. No
+amount of truncating the prefix rescues it. So bare words are compiled to `("word" OR "word"*)` — the
+exact form always hits once a word is complete, and the prefix helps when it can. If live type-ahead
+on partial words ever matters more than finding "demand-paged" from "paging", the tool is a second
+index on the `trigram` tokenizer (available in this build), not giving up stemming.
+
+Databases built before the tokenizer changed are migrated rather than left behind:
+`CREATE VIRTUAL TABLE IF NOT EXISTS` will not change a tokenizer, so `migrateFtsTokenizer` detects it
+from the stored DDL, drops, recreates and rebuilds. Safe because both indexes are external-content —
+the rows live in `documents` and `parts`, so an FTS table is a derived artifact.
+
 ## Demand paging is the whole point
 
 Ordinary file-based SQLite reads and writes 4 KB pages as queries touch them. `sql.js` loads the
@@ -229,8 +262,8 @@ src/
 
 | | what it answers |
 |---|---|
-| `npm test` | 34 Node tests: the model, routing, widgets, the query vocabulary, cards, edges, similarity, paging. Fast, no browser |
-| `npm run test:e2e` | 19 Chromium tests across both transports |
+| `npm test` | 38 Node tests: the model, routing, widgets, the query vocabulary, cards, edges, similarity, paging. Fast, no browser |
+| `npm run test:e2e` | 20 Chromium tests across both transports |
 | `npm run demo` | *Show me it working.* Drives the built app through 21 narrated steps, screenshots each one, prints measured values rather than ticks. `--headed` to watch. See [`demo/`](demo) |
 
 ## The theme is data

@@ -218,9 +218,19 @@ CREATE TABLE IF NOT EXISTS settings (
   value TEXT NOT NULL DEFAULT ''
 );
 
+-- Both indexes stem, via FTS5's porter tokenizer. Without it a search is morphologically literal:
+-- a query for "paging" does not find "demand-paged", and "read" does not find "reads" — both
+-- measured as zero hits against this build before the change and one after. That is the difference
+-- between a search box and a search.
+--
+-- The cost is real and worth stating: stemming conflates words a specialist might want kept apart,
+-- and an exact-phrase query is slightly blurrier. If that ever bites, the answer is a second
+-- unstemmed index rather than giving this one up.
+--
 -- Titles are indexed separately from parts so a title match can outrank a body match.
 CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts
-  USING fts5(title, subtitle, number, content='documents', content_rowid='id');
+  USING fts5(title, subtitle, number, content='documents', content_rowid='id',
+             tokenize='porter unicode61');
 
 CREATE TRIGGER IF NOT EXISTS documents_ai AFTER INSERT ON documents BEGIN
   INSERT INTO documents_fts(rowid, title, subtitle, number)
@@ -245,7 +255,7 @@ END;
 -- repeated identically in all three triggers because FTS5 external-content 'delete' must be
 -- given the same value that was indexed, or the index silently corrupts.
 CREATE VIRTUAL TABLE IF NOT EXISTS parts_fts
-  USING fts5(text, content='parts', content_rowid='id');
+  USING fts5(text, content='parts', content_rowid='id', tokenize='porter unicode61');
 
 CREATE TRIGGER IF NOT EXISTS parts_ai AFTER INSERT ON parts BEGIN
   INSERT INTO parts_fts(rowid, text)
@@ -364,6 +374,51 @@ export async function migrate(db: Db): Promise<void> {
   // the second pass is what creates anything the migration dropped.
   await db.exec(SCHEMA);
   await migrateFromV1(db);
+  await migrateFtsTokenizer(db);
+}
+
+/**
+ * Bring an existing FTS index onto the current tokenizer.
+ *
+ * `CREATE VIRTUAL TABLE IF NOT EXISTS` will not change the tokenizer of a table that already
+ * exists, so a database made before stemming would keep its literal index forever and quietly
+ * behave differently from a fresh one. Detect it from the stored DDL, drop, recreate, rebuild.
+ *
+ * Safe because both indexes are external-content: the rows live in `documents` and `parts`, so an
+ * FTS table is a derived artifact and dropping one loses nothing. The triggers reference it by name
+ * and stay valid across the swap.
+ */
+export async function migrateFtsTokenizer(db: Db): Promise<string[]> {
+  const rebuilt: string[] = [];
+  const indexes: { name: string; ddl: string }[] = [
+    {
+      name: 'documents_fts',
+      ddl: `CREATE VIRTUAL TABLE documents_fts
+              USING fts5(title, subtitle, number, content='documents', content_rowid='id',
+                         tokenize='porter unicode61')`,
+    },
+    {
+      name: 'parts_fts',
+      ddl: `CREATE VIRTUAL TABLE parts_fts
+              USING fts5(text, content='parts', content_rowid='id', tokenize='porter unicode61')`,
+    },
+  ];
+
+  for (const index of indexes) {
+    const existing = await db.scalar(
+      `SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = ?`,
+      [index.name],
+    );
+    if (typeof existing !== 'string') continue;
+    if (existing.includes('porter')) continue;
+
+    await db.exec(`DROP TABLE ${index.name}`);
+    await db.exec(index.ddl);
+    // External content means the index starts empty; 'rebuild' reads it back off the base table.
+    await db.exec(`INSERT INTO ${index.name}(${index.name}) VALUES('rebuild')`);
+    rebuilt.push(index.name);
+  }
+  return rebuilt;
 }
 
 /** Rebuild both FTS indexes. Only needed if either is ever suspected stale. */

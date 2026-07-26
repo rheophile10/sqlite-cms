@@ -450,6 +450,10 @@ export async function renderPath(db: Db, path: string, options: RenderOptions): 
           ...ctx,
           // `query` is the raw text so the search box round-trips; `criteria` is the structure.
           query: query.q,
+          like: query.like,
+          // The content words `like` was reduced to. Showing them is most of what makes a
+          // similarity result trustworthy — otherwise a hit is unexplained.
+          matched: result.terms,
           criteria: query,
           empty: isEmptyQuery(query),
           results: result.parts.map(decorate),

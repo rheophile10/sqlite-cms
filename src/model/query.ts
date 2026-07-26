@@ -4,6 +4,7 @@
 // bookmarkable, and back-button-able without any client state. `/p/query/?q=pager&tag=sqlite` is a
 // full-text search intersected with a tag, and it means the same thing tomorrow.
 //
+//   like       arbitrary text — paste a paragraph and get the passages closest to it
 //   q          FTS5 expression over part text. Bare words become prefix terms
 //   tag        tag slug; repeatable, or comma-separated
 //   category   category slug; repeatable, or comma-separated
@@ -20,6 +21,7 @@
 // `group=documents` folds the current page of passages up to the documents they came from.
 import type { Db, SqlValue } from '../engine/db.js';
 import { toMatchExpression, type DocumentType } from './documents.js';
+import { tokenize } from './similarity.js';
 
 export type Sort = 'relevance' | 'newest' | 'oldest';
 export type Grouping = 'parts' | 'documents';
@@ -27,6 +29,8 @@ export type TermMode = 'all' | 'any';
 
 export interface Query {
   q: string;
+  /** Arbitrary text to find passages *like*. See likeExpression(). */
+  like: string;
   tags: string[];
   categories: string[];
   types: DocumentType[];
@@ -41,6 +45,7 @@ export interface Query {
 
 export const EMPTY_QUERY: Query = {
   q: '',
+  like: '',
   tags: [],
   categories: [],
   types: [],
@@ -89,17 +94,21 @@ function bounded(raw: string | null, fallback: number, min: number, max: number)
 /** Never throws. A hand-edited URL is user input; a nonsense value falls back to the default. */
 export function parseQuery(params: URLSearchParams): Query {
   const q = (params.get('q') ?? '').trim();
+  // Capped: this arrives in a URL, and a whole document pasted in would be neither a useful query
+  // nor a reasonable thing to put in an address bar. The opening paragraphs carry the idea.
+  const like = (params.get('like') ?? '').trim().slice(0, 2000);
   const sortRaw = params.get('sort');
   const sort: Sort =
     sortRaw === 'newest' || sortRaw === 'oldest'
       ? sortRaw
-      : // Relevance is meaningless without a full-text expression to rank against.
-        q
+      : // Relevance is meaningless without something full-text to rank against.
+        q || like
         ? 'relevance'
         : 'newest';
 
   return {
     q,
+    like,
     tags: multi(params, 'tag'),
     categories: multi(params, 'category'),
     types: multi(params, 'type').filter((t): t is DocumentType => DOCUMENT_TYPES.has(t)),
@@ -117,6 +126,7 @@ export function parseQuery(params: URLSearchParams): Query {
 export function queryToParams(query: Query): URLSearchParams {
   const params = new URLSearchParams();
   if (query.q) params.set('q', query.q);
+  if (query.like) params.set('like', query.like);
   for (const tag of query.tags) params.append('tag', tag);
   for (const category of query.categories) params.append('category', category);
   for (const type of query.types) params.append('type', type);
@@ -124,7 +134,7 @@ export function queryToParams(query: Query): URLSearchParams {
   if (query.collection) params.set('collection', query.collection);
   if (query.termMode !== 'all') params.set('terms', query.termMode);
   // Relevance is the implied default when q is present, newest when it is not.
-  const impliedSort: Sort = query.q ? 'relevance' : 'newest';
+  const impliedSort: Sort = query.q || query.like ? 'relevance' : 'newest';
   if (query.sort !== impliedSort) params.set('sort', query.sort);
   if (query.group !== 'parts') params.set('group', query.group);
   if (query.limit !== 30) params.set('limit', String(query.limit));
@@ -138,6 +148,7 @@ export const queryToString = (query: Query): string => queryToParams(query).toSt
 export function isEmptyQuery(query: Query): boolean {
   return (
     !query.q &&
+    !query.like &&
     !query.tags.length &&
     !query.categories.length &&
     !query.types.length &&
@@ -161,10 +172,47 @@ export function toggleTerm(
 
 // ── SQL assembly ─────────────────────────────────────────────────────────────────────────────
 
-interface Fragment {
+/**
+ * Turn pasted text into an FTS5 expression: "find passages like this".
+ *
+ * The trick is that **bm25 already weights by inverse document frequency**, so there is no need to
+ * compute idf here and no need to hold the corpus in memory. Strip the stop words, keep the most
+ * repeated content words, OR them together, and let the engine's own ranking decide which passages
+ * are closest. Stemming does the morphology.
+ *
+ * Terms are quoted, which also makes this safe against text that happens to contain FTS5 syntax —
+ * pasted prose is full of hyphens, colons and asterisks that would otherwise be read as operators.
+ *
+ * Returns the terms as well as the expression, because showing *why* something matched is most of
+ * what makes a result trustworthy.
+ */
+export function likeExpression(text: string, maxTerms = 16): { expression: string; terms: string[] } {
+  const counts = new Map<string, number>();
+  for (const word of tokenize(text)) counts.set(word, (counts.get(word) ?? 0) + 1);
+  if (!counts.size) return { expression: '', terms: [] };
+
+  const terms = [...counts.entries()]
+    // Frequency within the pasted text is the only signal available here; bm25 supplies the rest.
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .slice(0, maxTerms)
+    .map(([word]) => word);
+
+  return { expression: terms.map((word) => `"${word}"`).join(' OR '), terms };
+}
+
+/** One WHERE clause and the parameters it needs. */
+interface Clause {
   from: string;
   where: string;
   params: SqlValue[];
+}
+
+/** The whole FROM/WHERE shared by results, count and facets. */
+interface Fragment extends Clause {
+  /** Content words derived from `like`, for showing why a result matched. */
+  terms: string[];
+  /** The composed FTS5 expression, or undefined when the query is not full-text at all. */
+  match?: string;
 }
 
 const placeholders = (values: readonly unknown[]): string => values.map(() => '?').join(', ');
@@ -175,7 +223,7 @@ const placeholders = (values: readonly unknown[]): string => values.map(() => '?
  * `all` needs the GROUP BY … HAVING count trick: a row can only match one term at a time, so
  * intersecting several means counting how many distinct ones a document matched.
  */
-function termFilter(kind: 'tag' | 'category', slugs: string[], mode: TermMode): Fragment | null {
+function termFilter(kind: 'tag' | 'category', slugs: string[], mode: TermMode): Clause | null {
   if (!slugs.length) return null;
   const base = `SELECT dt.document_id
                   FROM document_terms dt JOIN terms t ON t.id = dt.term_id
@@ -200,14 +248,23 @@ function buildFragment(query: Query): Fragment {
 
   // The MATCH clause has to come first: parameters are positional, and every other clause is
   // appended after it.
-  const from = query.q
+  const like = query.like ? likeExpression(query.like) : { expression: '', terms: [] };
+  // Either source of a full-text expression puts the FTS table in the query. With both, they are
+  // AND-ed: the words you insisted on, among the passages that look like what you pasted.
+  const expressions = [
+    ...(query.q ? [toMatchExpression(query.q)] : []),
+    ...(like.expression ? [`(${like.expression})`] : []),
+  ];
+  const match = expressions.length > 1 ? expressions.map((e) => `(${e})`).join(' AND ') : expressions[0];
+
+  const from = match
     ? `FROM parts_fts
          JOIN parts p     ON p.id = parts_fts.rowid
          JOIN documents d ON d.id = p.document_id`
     : `FROM parts p JOIN documents d ON d.id = p.document_id`;
-  if (query.q) {
+  if (match) {
     clauses.push('parts_fts MATCH ?');
-    params.push(toMatchExpression(query.q));
+    params.push(match);
   }
 
   clauses.push(`d.status = 'published'`, `d.visibility = 'public'`);
@@ -240,11 +297,11 @@ function buildFragment(query: Query): Fragment {
     params.push(...filter.params);
   }
 
-  return { from, where: clauses.join('\n   AND '), params };
+  return { from, where: clauses.join('\n   AND '), params, terms: like.terms, match };
 }
 
-function orderBy(query: Query): string {
-  if (query.sort === 'relevance' && query.q) return 'bm25(parts_fts), d.created DESC';
+function orderBy(query: Query, isFullText: boolean): string {
+  if (query.sort === 'relevance' && isFullText) return 'bm25(parts_fts), d.created DESC';
   if (query.sort === 'oldest') return 'd.created ASC, d.id, p.ordinal';
   return 'd.created DESC, d.id DESC, p.ordinal';
 }
@@ -278,6 +335,8 @@ export interface QueryResult {
   parts: QueryPart[];
   /** Total matching parts, ignoring limit and offset. */
   total: number;
+  /** Content words derived from `like`, so a result can show why it matched. */
+  terms: string[];
   facets: {
     tags: FacetValue[];
     categories: FacetValue[];
@@ -313,10 +372,11 @@ export async function runQuery(db: Db, query: Query): Promise<QueryResult> {
   const fragment = buildFragment(query);
 
   // snippet() and bm25() are only available when an FTS5 table is in the query.
-  const snippet = query.q
+  const isFullText = Boolean(fragment.match);
+  const snippet = isFullText
     ? `snippet(parts_fts, 0, '«', '»', '…', 22)`
     : `substr(p.text, 1, 240)`;
-  const rank = query.q ? `bm25(parts_fts)` : `0`;
+  const rank = isFullText ? `bm25(parts_fts)` : `0`;
 
   let parts: QueryPart[] = [];
   let total = 0;
@@ -327,7 +387,7 @@ export async function runQuery(db: Db, query: Query): Promise<QueryResult> {
               ${snippet} AS snippet, ${rank} AS rank
          ${fragment.from}
         WHERE ${fragment.where}
-        ORDER BY ${orderBy(query)}
+        ORDER BY ${orderBy(query, isFullText)}
         LIMIT ? OFFSET ?`,
       [...fragment.params, query.limit, query.offset],
     );
@@ -341,6 +401,7 @@ export async function runQuery(db: Db, query: Query): Promise<QueryResult> {
       query,
       parts: [],
       total: 0,
+      terms: fragment.terms,
       facets: { tags: [], categories: [], kinds: [], types: [] },
     };
   }
@@ -366,6 +427,7 @@ export async function runQuery(db: Db, query: Query): Promise<QueryResult> {
     query,
     parts,
     total,
+    terms: fragment.terms,
     facets: {
       tags: await termFacets(db, fragment, 'tag'),
       categories: await termFacets(db, fragment, 'category'),

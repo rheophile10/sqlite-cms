@@ -222,6 +222,7 @@ const QUERY = `<h1 class="page-title">{{#if query}}{{query}}{{else}}Query{{/if}}
 
 <form class="queryform" data-cms-query action="{{site.home}}query/">
   <input type="search" name="q" value="{{query}}" placeholder="Full-text over passages…" autocomplete="off">
+  <textarea name="like" rows="3" placeholder="…or paste an idea, an error, a paragraph — and find what is closest to it">{{like}}</textarea>
   <div class="queryrow">
     {{#each criteria.tags}}<input type="hidden" name="tag" value="{{.}}">{{/each}}
     {{#each criteria.categories}}<input type="hidden" name="category" value="{{.}}">{{/each}}
@@ -257,6 +258,9 @@ const QUERY = `<h1 class="page-title">{{#if query}}{{query}}{{else}}Query{{/if}}
     <code>?type=</code> by document type. Combine as many as you like — the URL is the query.
   </p>
 {{else}}
+  {{#if matched}}
+  <p class="matched">matched on {{#each matched}}<code>{{.}}</code> {{/each}}</p>
+  {{/if}}
   <p class="meta resultline">
     {{total}} passage(s){{#if query}} for &ldquo;{{query}}&rdquo;{{/if}}{{#if from}} · showing {{from}}&ndash;{{shown}}{{/if}}
     {{#if sorts}} · sort {{#each sorts}}<a class="term{{#if active}} on{{/if}}" href="{{url}}">{{value}}</a>{{/each}}{{/if}}
@@ -431,6 +435,11 @@ mark{background:var(--mark);border-radius:2px;padding:0 2px}
 .queryform{margin:22px 0 6px}
 .queryform input[type=search]{width:100%;padding:10px 13px;border:1px solid var(--rule);border-radius:8px;
   background:transparent;color:var(--fg);font:16px/1.4 inherit}
+.queryform textarea{width:100%;margin-top:8px;padding:10px 13px;border:1px solid var(--rule);
+  border-radius:8px;background:transparent;color:var(--fg);font:14px/1.5 inherit;resize:vertical}
+.matched{margin:14px 0 0;font-size:12px;color:var(--muted);
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+.matched code{font-size:11px}
 .queryrow{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:10px;
   font:12px/1 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;color:var(--muted)}
 .queryrow label{display:flex;gap:5px;align-items:center;text-transform:uppercase;letter-spacing:.07em}
