@@ -487,7 +487,20 @@ function wire(): void {
   });
 }
 
+/**
+ * A first-ever visit to a shared permalink has no Service Worker yet and no file on disk at that
+ * path, so the host serves public/404.html, which bounces here with the original path in `?p=`.
+ * Put it back in the address bar before anything reads location — shellDirectory() and
+ * isSitePath() both depend on it.
+ */
+function restoreRequestedPermalink(): void {
+  const requested = new URLSearchParams(location.search).get('p');
+  if (!requested || !requested.startsWith('/')) return;
+  history.replaceState(null, '', requested);
+}
+
 async function boot(): Promise<void> {
+  restoreRequestedPermalink();
   db = await openDatabase({ idbName: IDB_NAME });
   await migrate(db);
   await seedTheme(db);

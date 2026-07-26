@@ -1,0 +1,31 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Redirecting…</title>
+<script>
+  // A static host serves this file for any path with no file behind it. A permalink like
+  // /sqlite-cms/p/hello-world/ is exactly that on a first-ever visit — before the Service Worker
+  // exists, there is nothing on disk at that path. So hand the requested path to the shell as a
+  // query parameter; the shell restores it with replaceState, and the address bar ends up showing
+  // the permalink that was asked for. Once the worker is installed it intercepts first and this
+  // file is never reached again.
+  //
+  // GitHub Pages uses 404.html for this automatically. serve.mjs does the same, so the path is
+  // covered by test/e2e.test.mjs rather than only in production.
+  (function () {
+    var marker = '/p/';
+    var path = location.pathname + location.search;
+    var at = path.indexOf(marker);
+    // Anything that is not a site permalink is a genuine 404; do not bounce it anywhere.
+    // document.write, not document.body — this script runs during parsing, before a body exists.
+    if (at < 0) {
+      document.title = 'Not found';
+      document.write(
+        '<pre style="font:14px ui-monospace,Menlo,monospace;padding:24px">404 — ' +
+          path.replace(/[<&>]/g, '') +
+          '</pre>',
+      );
+      return;
+    }
+    location.replace(path.slice(0, at + 1) + 'index.html?p=' + encodeURIComponent(path));
+  })();
+</script>

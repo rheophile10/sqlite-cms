@@ -35,11 +35,18 @@ export function startServer({ root, port = 0 } = {}) {
 
     if (existsSync(file) && statSync(file).isDirectory()) file = join(file, 'index.html');
 
-    // Anything without a real file behind it gets the shell, which routes client-side.
-    if (!existsSync(file)) file = join(base, 'index.html');
+    // Anything without a real file behind it gets 404.html, exactly as GitHub Pages does — which
+    // is what makes a first-ever visit to a shared permalink work. Keeping the same rule here
+    // means that path is exercised by the test suite instead of only in production.
+    let status = 200;
+    if (!existsSync(file)) {
+      status = 404;
+      file = join(base, '404.html');
+      if (!existsSync(file)) file = join(base, 'index.html');
+    }
 
     const type = MIME[extname(file)] ?? 'application/octet-stream';
-    res.writeHead(200, {
+    res.writeHead(status, {
       'content-type': type,
       // The worker must never be served stale, or an old fetch handler sticks around.
       'cache-control': file.endsWith('sw.js') ? 'no-cache' : 'no-store',

@@ -28,6 +28,15 @@ test.after(async () => {
   http?.server.close();
 });
 
+/**
+ * Wait for boot to finish. state:'attached' rather than the default 'visible' on purpose:
+ * #engine lives inside .admin, which standalone-permalink mode hides at the end of boot, so a
+ * visibility-based wait races that hide and can never succeed.
+ */
+async function waitReady(page) {
+  await page.waitForSelector(READY, { state: 'attached', timeout: 90_000 });
+}
+
 /** Fresh context => empty IndexedDB and no registered worker, so each test starts from nothing. */
 async function openShell(url) {
   const context = await browser.newContext();
@@ -35,7 +44,7 @@ async function openShell(url) {
   const errors = [];
   page.on('pageerror', (err) => errors.push(err.message));
   await page.goto(url);
-  await page.waitForSelector(READY, { timeout: 90_000 });
+  await waitReady(page);
   return { page, context, errors };
 }
 
@@ -247,7 +256,7 @@ test('file://: an edit in the admin changes what the site serves, and survives a
 
   // Reload: everything came out of IndexedDB, so it is all still there.
   await page.reload();
-  await page.waitForSelector(READY, { timeout: 90_000 });
+  await waitReady(page);
   await siteFrame(page);
   const body = await (await siteFrame(page)).textContent('body');
   assert.match(body, /Edited From The Admin/);
@@ -343,7 +352,7 @@ test('http: a permalink pasted into a tab with the admin already open renders di
   const context = await browser.newContext();
   const shell = await context.newPage();
   await shell.goto(`${http.origin}/`);
-  await shell.waitForSelector(READY, { timeout: 90_000 });
+  await waitReady(shell);
   await shell.waitForFunction(() => /service worker/.test(document.querySelector('#transport')?.textContent ?? ''), undefined, { timeout: 60_000 });
 
   // A second tab on a permalink. A client exists, so the worker answers from the database and
@@ -380,7 +389,7 @@ test('http: a permalink opened cold, with no page running, still renders', async
   // Install the worker, then close every page so there is no client left to ask.
   const installer = await context.newPage();
   await installer.goto(`${http.origin}/`);
-  await installer.waitForSelector(READY, { timeout: 90_000 });
+  await waitReady(installer);
   await installer.waitForFunction(() => /service worker/.test(document.querySelector('#transport')?.textContent ?? ''), undefined, { timeout: 60_000 });
   await installer.close();
 
@@ -390,7 +399,7 @@ test('http: a permalink opened cold, with no page running, still renders', async
   const errors = [];
   cold.on('pageerror', (err) => errors.push(err.message));
   await cold.goto(`${http.origin}/p/hello-world/`);
-  await cold.waitForSelector(READY, { timeout: 90_000 });
+  await waitReady(cold);
 
   await cold
     .frameLocator('#site')
@@ -400,5 +409,42 @@ test('http: a permalink opened cold, with no page running, still renders', async
   assert.equal(await cold.locator('.admin').isHidden(), true, 'admin chrome should be hidden');
 
   assert.deepEqual(errors, []);
+  await context.close();
+});
+
+test('http: a shared permalink works on a first-ever visit, with no worker installed', async () => {
+  // The static-host path: fresh context, so no Service Worker and no IndexedDB. Nothing exists on
+  // disk at /p/hello-world/, so the host serves 404.html, which bounces to the shell with the
+  // path in ?p=. The shell restores the address bar and renders it.
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  const errors = [];
+  page.on('pageerror', (err) => errors.push(err.message));
+
+  await page.goto(`${http.origin}/p/hello-world/`);
+  await waitReady(page);
+
+  await page
+    .frameLocator('#site')
+    .getByText('Hello from inside the database')
+    .first()
+    .waitFor({ timeout: 60_000 });
+
+  // The bounce must not be visible in the final URL — a shared link has to survive being shared.
+  assert.equal(new URL(page.url()).pathname, '/p/hello-world/');
+  assert.equal(new URL(page.url()).search, '', 'the ?p= hand-off should not linger');
+  assert.equal(await page.locator('.admin').isHidden(), true, 'admin chrome should be hidden');
+
+  assert.deepEqual(errors, []);
+  await context.close();
+});
+
+test('http: a genuine 404 is not bounced anywhere', async () => {
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  const response = await page.goto(`${http.origin}/not-a-thing.txt`);
+  assert.equal(response.status(), 404);
+  assert.match(await page.textContent('body'), /404/);
+  assert.equal(new URL(page.url()).pathname, '/not-a-thing.txt', 'should stay put');
   await context.close();
 });

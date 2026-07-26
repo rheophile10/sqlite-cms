@@ -23,7 +23,7 @@ npm run dev        # vite dev server
 npm run build      # → docs/index.html (self-contained) + docs/sw.js
 npm run serve      # static server, so the Service Worker path is reachable
 npm test           # routing, templates, content model, paging  (15 tests, Node)
-npm run test:e2e   # both transports in real Chromium         (10 tests)
+npm run test:e2e   # both transports in real Chromium         (12 tests)
 ```
 
 Then either open `docs/index.html` by double-clicking it, or `npm run serve` and visit
@@ -62,6 +62,7 @@ to get — see below.
 | `src/render.ts` | **the router and renderer.** Takes a path, returns status + MIME + body. DOM-free, so Node can test it |
 | `src/transport.ts` | picks Service Worker or `blob:` from the environment; the only file needing a DOM |
 | `public/sw.js` | the web server, when there is one. Owns no data — asks a page and wraps the answer in a `Response` |
+| `public/404.html` | 1 KB shim so a shared permalink works on a first-ever visit, before any worker exists |
 | `src/seed.ts` | first-boot demo content |
 | `src/main.ts` | admin UI wiring |
 | `serve.mjs` | static server for the hosted path |
@@ -138,8 +139,19 @@ app shell, which boots, reads `location.pathname`, hides the admin chrome and re
 permalink. The URL stays real and shareable either way; on a cold load the HTML is composed a few
 hundred milliseconds later by the page rather than arriving pre-rendered.
 
-For that to work on a static host, unknown paths must fall back to the shell. `serve.mjs` does it;
-on GitHub Pages the equivalent is `cp docs/index.html docs/404.html`.
+A **first-ever** visit to a shared link is different again: there is no worker yet *and* no file on
+disk at that path, so nothing intercepts. `public/404.html` handles it — a 1 KB shim that every
+static host (GitHub Pages included) serves for unmatched paths. It hands the requested path to the
+shell as `?p=…`, and the shell puts it back with `replaceState`, so the address bar still ends up
+showing the permalink that was shared. Once the worker is installed it intercepts first and the shim
+is never reached again.
+
+`serve.mjs` follows the same 404 rule as GitHub Pages deliberately, so that path is covered by the
+test suite rather than only discovered in production. A genuine 404 — anything without the content
+prefix — is left where it is instead of being bounced.
+
+To deploy on GitHub Pages: enable Pages for `/docs` on `main`. No build configuration is needed;
+`docs/` already contains the three files it serves.
 
 ## Inherited constraints
 
