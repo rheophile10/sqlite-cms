@@ -34,8 +34,8 @@ npm install
 npm run dev        # vite dev server
 npm run build      # → docs/index.html (self-contained) + docs/sw.js + docs/404.html
 npm run serve      # static server, so the Service Worker path is reachable
-npm test           # model, routing, widgets, query, cards, edges  (39 tests, Node)
-npm run test:e2e   # both transports in real Chromium            (20 tests)
+npm test           # model, routing, widgets, query, cards, edges  (40 tests, Node)
+npm run test:e2e   # both transports, plus responsive checks     (22 tests)
 npm run demo       # narrated walkthrough + screenshots          (21 steps)
 ```
 
@@ -281,9 +281,30 @@ src/
 
 | | what it answers |
 |---|---|
-| `npm test` | 39 Node tests: the model, routing, widgets, the query vocabulary, cards, edges, similarity, paging. Fast, no browser |
-| `npm run test:e2e` | 20 Chromium tests across both transports |
+| `npm test` | 40 Node tests: the model, routing, widgets, the query vocabulary, cards, edges, similarity, paging. Fast, no browser |
+| `npm run test:e2e` | 22 Chromium tests: both transports, and no horizontal overflow at 390/768/1440 px |
 | `npm run demo` | *Show me it working.* Drives the built app through 21 narrated steps, screenshots each one, prints measured values rather than ticks. `--headed` to watch. See [`demo/`](demo) |
+
+## Mobile and desktop
+
+Every page has to hold up on a phone, and that is asserted rather than assumed. `test/e2e.test.mjs`
+loads the content-heaviest entry at **390 / 768 / 1440 px** and requires **zero horizontal
+overflow** — in the rendered frame, in the admin shell, and on the query page, which has the most
+controls to wrap. Overflow is the right thing to assert because it is objective: a table, a code
+block or a wide image escaping its column shows up as a number, not an opinion.
+
+The reflow itself is asserted on the computed value rather than on the media query: the paired
+narration-and-clip `story` grid must be one column at 390 px and two at 1440 px. Wide content —
+tables, `pre`, the raw-embed frame — scrolls inside its own container rather than pushing the page
+sideways.
+
+## Rendering without a shell
+
+`RenderOptions.standalone` omits the navigation bridge. The bridge exists because the frame's parent
+owns the address bar; a page prerendered to a static file owns its own, so intercepting clicks would
+break every link. With `standalone` set, links, fragments and the search form behave like ordinary
+HTML — which is what makes it possible to generate a static site out of the same renderer that serves
+the live one.
 
 ## The theme is data
 

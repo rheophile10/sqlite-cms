@@ -720,3 +720,92 @@ test('file://: pasting an idea finds the passage that says it differently', asyn
   assert.deepEqual(errors, []);
   await context.close();
 });
+
+test('every page holds up at phone, tablet and desktop widths', async () => {
+  // A layout requirement that nothing else would catch: a page can look fine on the machine it was
+  // written on and push the viewport sideways on a phone. Horizontal overflow is the symptom worth
+  // asserting, because it is objective — a table, a code block or a wide image escaping its column.
+  const VIEWPORTS = [
+    ['phone', 390, 844],
+    ['tablet', 768, 1024],
+    ['desktop', 1440, 900],
+  ];
+
+  const measure = async (frame) =>
+    frame.evaluate(() => {
+      const de = document.documentElement;
+      const offenders = [...document.querySelectorAll('*')]
+        .filter((el) => el.getBoundingClientRect().right > de.clientWidth + 1)
+        .map((el) => `${el.tagName.toLowerCase()}.${String(el.className || '').split(' ')[0]}`);
+      return { overflow: de.scrollWidth - de.clientWidth, offenders: [...new Set(offenders)] };
+    });
+
+  for (const [label, width, height] of VIEWPORTS) {
+    const context = await browser.newContext({ viewport: { width, height } });
+    const page = await context.newPage();
+    const errors = [];
+    page.on('pageerror', (err) => errors.push(err.message));
+    await page.goto(FILE_URL);
+    await waitReady(page);
+    await siteFrame(page);
+
+    // The content-heaviest entry: tables, a code block, an image, callouts.
+    await page.frameLocator('#site').getByRole('link', { name: 'Demand paging, illustrated' }).click();
+    await waitForTitle(page, /Demand paging/);
+    const frame = await siteFrame(page);
+
+    const { overflow, offenders } = await measure(frame);
+    assert.equal(
+      overflow,
+      0,
+      `${label} (${width}px): ${overflow}px of horizontal overflow — ${offenders.join(', ')}`,
+    );
+
+    // The shell must not overflow either; at narrow widths its two columns stack.
+    const shellOverflow = await page.evaluate(
+      () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    );
+    assert.equal(shellOverflow, 0, `${label}: the admin shell overflowed by ${shellOverflow}px`);
+
+    // And the query page, which has the most controls to wrap.
+    await page.frameLocator('#site').locator('input[name=q]').first().fill('pager');
+    await page.frameLocator('#site').locator('input[name=q]').first().press('Enter');
+    await page.frameLocator('#site').locator('.resultline').waitFor({ timeout: 30_000 });
+    const query = await measure(await siteFrame(page));
+    assert.equal(query.overflow, 0, `${label} query page: ${query.offenders.join(', ')}`);
+
+    assert.deepEqual(errors, []);
+    await context.close();
+  }
+});
+
+test('the story layout reflows from one column to two', async () => {
+  // The paired narration-and-clip parts are a grid, and the whole point of the grid is that it
+  // becomes a single column on a phone. Asserting the computed value, not the media query.
+  const columnsAt = async (width) => {
+    const context = await browser.newContext({ viewport: { width, height: 900 } });
+    const page = await context.newPage();
+    await page.goto(FILE_URL);
+    await waitReady(page);
+    await siteFrame(page);
+    // The seeded handbook has no story parts; the About page's table is the wide element here, so
+    // use the admin to confirm the rule applies by measuring a story part rendered on demand.
+    const frame = await siteFrame(page);
+    const value = await frame.evaluate(() => {
+      const probe = document.createElement('section');
+      probe.className = 'part story';
+      probe.innerHTML = '<div class="story-text"><p>a</p></div><div class="story-media"><p>b</p></div>';
+      document.querySelector('main').append(probe);
+      const columns = getComputedStyle(probe).gridTemplateColumns;
+      probe.remove();
+      return columns;
+    });
+    await context.close();
+    return value;
+  };
+
+  const phone = await columnsAt(390);
+  const desktop = await columnsAt(1440);
+  assert.equal(phone.split(' ').length, 1, `phone should be one column, got "${phone}"`);
+  assert.equal(desktop.split(' ').length, 2, `desktop should be two columns, got "${desktop}"`);
+});

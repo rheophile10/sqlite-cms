@@ -64,6 +64,14 @@ export interface RenderOptions {
    * an account chip. Absent means signed out, which is the only possible state at file://.
    */
   viewer?: Viewer;
+  /**
+   * Render for a page that has no shell above it — a prerendered file on a static host.
+   *
+   * The navigation bridge exists because the frame's parent owns the address bar; a standalone page
+   * owns its own, so intercepting clicks would break every link. With this set the bridge is
+   * omitted and links, fragments and the search form all behave like ordinary HTML.
+   */
+  standalone?: boolean;
 }
 
 /** The reader, as far as a template needs to know. */
@@ -287,6 +295,7 @@ function compose(
   inner: string,
   title: string,
   data: Record<string, unknown>,
+  options: RenderOptions,
 ): string {
   const content = renderTemplate(templates[inner] ?? '', data);
   const html = renderTemplate(templates.layout ?? '', {
@@ -295,6 +304,8 @@ function compose(
     content,
     style: templates.style ?? '',
   });
+  // A standalone page owns its own address bar, so it gets no bridge and its links work natively.
+  if (options.standalone) return html;
   return html.includes('</body>') ? html.replace('</body>', `${BRIDGE}</body>`) : html + BRIDGE;
 }
 
@@ -317,12 +328,13 @@ async function notFound(
   templates: Record<string, string>,
   ctx: Record<string, unknown>,
   path: string,
+  options: RenderOptions,
 ): Promise<Served> {
   return {
     kind: 'html',
     status: 404,
     mime: HTML_MIME,
-    body: compose(templates, 'notfound', 'Not found', { ...ctx, query: '', path }),
+    body: compose(templates, 'notfound', 'Not found', { ...ctx, query: '', path }, options),
   };
 }
 
@@ -392,7 +404,7 @@ export async function renderPath(db: Db, path: string, options: RenderOptions): 
           categories,
           tags,
           collections,
-        }),
+        }, options),
       };
     }
 
@@ -516,13 +528,13 @@ export async function renderPath(db: Db, path: string, options: RenderOptions): 
               : '',
           next: shown < result.total ? linkTo({ ...query, offset: query.offset + query.limit }) : '',
           clear: linkTo({ ...EMPTY_QUERY, limit: query.limit }),
-        }),
+        }, options),
       };
     }
 
     case 'archive': {
       const term = await getTermBySlug(db, route.kind, route.slug);
-      if (!term) return notFound(templates, ctx, path);
+      if (!term) return notFound(templates, ctx, path, options);
       const docs = await db.query<Doc>(
         `SELECT d.id, d.slug, d.title, d.number, d.type, d.excerpt, d.created
            FROM documents d JOIN document_terms dt ON dt.document_id = d.id
@@ -541,13 +553,13 @@ export async function renderPath(db: Db, path: string, options: RenderOptions): 
           term: { ...term, url: termUrl(base, term) },
           posts: docs.map((d) => docView(base, d)),
           count: docs.length,
-        }),
+        }, options),
       };
     }
 
     case 'collection': {
       const collection = await getCollectionBySlug(db, route.slug);
-      if (!collection) return notFound(templates, ctx, path);
+      if (!collection) return notFound(templates, ctx, path, options);
       const nodes = await subtree(db, 0, {
         collectionId: collection.id,
         publishedOnly: true,
@@ -563,15 +575,15 @@ export async function renderPath(db: Db, path: string, options: RenderOptions): 
           collection,
           tree,
           count: tree.length,
-        }),
+        }, options),
       };
     }
 
     case 'part': {
       const doc = await getPublishedBySlug(db, route.slug);
-      if (!doc) return notFound(templates, ctx, path);
+      if (!doc) return notFound(templates, ctx, path, options);
       const part = await getPartByAnchor(db, doc.id, route.anchor);
-      if (!part) return notFound(templates, ctx, path);
+      if (!part) return notFound(templates, ctx, path, options);
       const related = (await relatedParts(db, part.id, { limit: 6 })).map((r) => ({
         url: partUrl(base, r.slug, r.anchor),
         title: r.title,
@@ -593,13 +605,13 @@ export async function renderPath(db: Db, path: string, options: RenderOptions): 
             unlocked: false,
           }),
           related,
-        }),
+        }, options),
       };
     }
 
     case 'document': {
       const doc = await getPublishedBySlug(db, route.slug);
-      if (!doc) return notFound(templates, ctx, path);
+      if (!doc) return notFound(templates, ctx, path, options);
 
       const terms = await termsForDocument(db, doc.id);
       const view = docView(base, doc, terms);
@@ -641,7 +653,7 @@ export async function renderPath(db: Db, path: string, options: RenderOptions): 
           breadcrumbs: ancestors,
           related,
           card,
-        }),
+        }, options),
       };
     }
   }
@@ -666,5 +678,5 @@ export async function renderPreview(db: Db, doc: Doc, options: RenderOptions): P
     children: [],
     breadcrumbs: [],
     related: [],
-  });
+  }, options);
 }
