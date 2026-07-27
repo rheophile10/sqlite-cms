@@ -450,7 +450,11 @@ export async function renderPath(db: Db, path: string, options: RenderOptions): 
           ...ctx,
           // `query` is the raw text so the search box round-trips; `criteria` is the structure.
           query: query.q,
+          match: query.match,
           like: query.like,
+          // Shown rather than swallowed: an empty result set and a syntax error are not the same
+          // thing, and confusing them is how a broken query compiler ships unnoticed.
+          error: result.error ?? '',
           // The content words `like` was reduced to. Showing them is most of what makes a
           // similarity result trustworthy — otherwise a hit is unexplained.
           matched: result.terms,

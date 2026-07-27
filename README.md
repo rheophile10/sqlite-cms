@@ -34,7 +34,7 @@ npm install
 npm run dev        # vite dev server
 npm run build      # → docs/index.html (self-contained) + docs/sw.js + docs/404.html
 npm run serve      # static server, so the Service Worker path is reachable
-npm test           # model, routing, widgets, query, cards, edges  (38 tests, Node)
+npm test           # model, routing, widgets, query, cards, edges  (39 tests, Node)
 npm run test:e2e   # both transports in real Chromium            (20 tests)
 npm run demo       # narrated walkthrough + screenshots          (21 steps)
 ```
@@ -95,8 +95,9 @@ and `/p/query/?q=pager&tag=sqlite` are the same thing.
 
 | parameter | |
 |---|---|
+| `match` | **a raw FTS5 expression, verbatim.** Nothing rewritten; a syntax error is reported, not swallowed |
 | `like` | **arbitrary text.** Paste an idea, an error, a paragraph — get the passages closest to it |
-| `q` | FTS5 over part text; `NEAR`, `OR`, `"phrases"` pass through |
+| `q` | convenience form: bare words are compiled, real FTS5 syntax passes through |
 | `tag`, `category` | slug; repeatable (`?tag=a&tag=b`) or comma-separated (`?tag=a,b`) |
 | `terms` | how to combine several of them — `all` (default) or `any` |
 | `type` | document type: `post`, `page`, `section`, `chapter`, `book`, `rule` |
@@ -105,6 +106,24 @@ and `/p/query/?q=pager&tag=sqlite` are the same thing.
 | `sort` | `relevance` (default when `q` is present) · `newest` · `oldest` |
 | `group` | `parts` (default) or `documents` — folds the page of passages up to their entries |
 | `limit`, `offset` | paging; limit is clamped to 1–200 |
+
+Three ways to say what you are looking for, and they compose (AND-ed):
+
+```
+/p/query/?match=NEAR(pager pages, 10)      raw FTS5, used exactly as written
+/p/query/?q=pager pages                    compiled for you
+/p/query/?like=<a pasted paragraph>        reduced to its content words
+/p/query/?match=pager&kind=code&tag=sqlite intersected with the filters
+```
+
+`q` guesses — it compiles bare words and passes anything that looks like FTS5 syntax straight
+through. That is convenient for a person and wrong for a program, which needs to know that what it
+wrote is what runs. `match` is for the program: no heuristic, no rewriting.
+
+And a malformed expression **says so**. An empty result set and a syntax error are indistinguishable
+to a caller, which is exactly how a broken query compiler shipped here unnoticed — so `runQuery`
+returns the engine's complaint in `error`, and the page shows it. A well-formed expression that
+happens to match nothing is not an error, and the two stay distinct.
 
 Results are **passages**, each with its own URL. Facet counts are computed over the matching set
 rather than the whole site, so a filter that would return nothing is never offered — and every
@@ -262,7 +281,7 @@ src/
 
 | | what it answers |
 |---|---|
-| `npm test` | 38 Node tests: the model, routing, widgets, the query vocabulary, cards, edges, similarity, paging. Fast, no browser |
+| `npm test` | 39 Node tests: the model, routing, widgets, the query vocabulary, cards, edges, similarity, paging. Fast, no browser |
 | `npm run test:e2e` | 20 Chromium tests across both transports |
 | `npm run demo` | *Show me it working.* Drives the built app through 21 narrated steps, screenshots each one, prints measured values rather than ticks. `--headed` to watch. See [`demo/`](demo) |
 

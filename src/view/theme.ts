@@ -223,6 +223,8 @@ const QUERY = `<h1 class="page-title">{{#if query}}{{query}}{{else}}Query{{/if}}
 <form class="queryform" data-cms-query action="{{site.home}}query/">
   <input type="search" name="q" value="{{query}}" placeholder="Full-text over passages…" autocomplete="off">
   <textarea name="like" rows="3" placeholder="…or paste an idea, an error, a paragraph — and find what is closest to it">{{like}}</textarea>
+  <input type="text" name="match" value="{{match}}" autocomplete="off"
+         placeholder="…or a raw FTS5 expression, used verbatim — NEAR(pager pages, 10)">
   <div class="queryrow">
     {{#each criteria.tags}}<input type="hidden" name="tag" value="{{.}}">{{/each}}
     {{#each criteria.categories}}<input type="hidden" name="category" value="{{.}}">{{/each}}
@@ -251,6 +253,9 @@ const QUERY = `<h1 class="page-title">{{#if query}}{{query}}{{else}}Query{{/if}}
 </p>
 {{/if}}
 
+{{#if error}}
+<p class="queryerror">FTS5 could not read that expression — <code>{{error}}</code></p>
+{{/if}}
 {{#if empty}}
   <p class="empty">
     Ask for something. <code>?q=</code> is full text over passages; <code>?tag=</code> and
@@ -440,6 +445,12 @@ mark{background:var(--mark);border-radius:2px;padding:0 2px}
 .matched{margin:14px 0 0;font-size:12px;color:var(--muted);
   font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
 .matched code{font-size:11px}
+.queryform input[type=text]{width:100%;margin-top:8px;padding:9px 13px;border:1px solid var(--rule);
+  border-radius:8px;background:transparent;color:var(--fg);
+  font:13px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace}
+.queryerror{margin:14px 0 0;padding:10px 13px;border:1px solid #f8717155;border-radius:8px;
+  color:#f87171;font-size:13px;
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
 .queryrow{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:10px;
   font:12px/1 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;color:var(--muted)}
 .queryrow label{display:flex;gap:5px;align-items:center;text-transform:uppercase;letter-spacing:.07em}

@@ -4,8 +4,9 @@
 // bookmarkable, and back-button-able without any client state. `/p/query/?q=pager&tag=sqlite` is a
 // full-text search intersected with a tag, and it means the same thing tomorrow.
 //
+//   match      a raw FTS5 expression, passed through verbatim. Nothing is rewritten
 //   like       arbitrary text — paste a paragraph and get the passages closest to it
-//   q          FTS5 expression over part text. Bare words become prefix terms
+//   q          convenience form: bare words are compiled; real FTS5 syntax passes through
 //   tag        tag slug; repeatable, or comma-separated
 //   category   category slug; repeatable, or comma-separated
 //   terms      how to combine several tags/categories — `all` (default) or `any`
@@ -29,6 +30,15 @@ export type TermMode = 'all' | 'any';
 
 export interface Query {
   q: string;
+  /**
+   * A raw FTS5 expression, used exactly as given.
+   *
+   * `q` guesses: it compiles bare words and passes anything that looks like FTS5 syntax through. The
+   * guess is convenient for a person and wrong for a program, which needs to know that what it wrote
+   * is what runs. Hence this — no heuristic, no rewriting, and a syntax error is reported rather than
+   * swallowed into an empty result.
+   */
+  match: string;
   /** Arbitrary text to find passages *like*. See likeExpression(). */
   like: string;
   tags: string[];
@@ -45,6 +55,7 @@ export interface Query {
 
 export const EMPTY_QUERY: Query = {
   q: '',
+  match: '',
   like: '',
   tags: [],
   categories: [],
@@ -94,6 +105,7 @@ function bounded(raw: string | null, fallback: number, min: number, max: number)
 /** Never throws. A hand-edited URL is user input; a nonsense value falls back to the default. */
 export function parseQuery(params: URLSearchParams): Query {
   const q = (params.get('q') ?? '').trim();
+  const match = (params.get('match') ?? '').trim().slice(0, 1000);
   // Capped: this arrives in a URL, and a whole document pasted in would be neither a useful query
   // nor a reasonable thing to put in an address bar. The opening paragraphs carry the idea.
   const like = (params.get('like') ?? '').trim().slice(0, 2000);
@@ -102,12 +114,13 @@ export function parseQuery(params: URLSearchParams): Query {
     sortRaw === 'newest' || sortRaw === 'oldest'
       ? sortRaw
       : // Relevance is meaningless without something full-text to rank against.
-        q || like
+        q || match || like
         ? 'relevance'
         : 'newest';
 
   return {
     q,
+    match,
     like,
     tags: multi(params, 'tag'),
     categories: multi(params, 'category'),
@@ -126,6 +139,7 @@ export function parseQuery(params: URLSearchParams): Query {
 export function queryToParams(query: Query): URLSearchParams {
   const params = new URLSearchParams();
   if (query.q) params.set('q', query.q);
+  if (query.match) params.set('match', query.match);
   if (query.like) params.set('like', query.like);
   for (const tag of query.tags) params.append('tag', tag);
   for (const category of query.categories) params.append('category', category);
@@ -134,7 +148,7 @@ export function queryToParams(query: Query): URLSearchParams {
   if (query.collection) params.set('collection', query.collection);
   if (query.termMode !== 'all') params.set('terms', query.termMode);
   // Relevance is the implied default when q is present, newest when it is not.
-  const impliedSort: Sort = query.q || query.like ? 'relevance' : 'newest';
+  const impliedSort: Sort = query.q || query.match || query.like ? 'relevance' : 'newest';
   if (query.sort !== impliedSort) params.set('sort', query.sort);
   if (query.group !== 'parts') params.set('group', query.group);
   if (query.limit !== 30) params.set('limit', String(query.limit));
@@ -148,6 +162,7 @@ export const queryToString = (query: Query): string => queryToParams(query).toSt
 export function isEmptyQuery(query: Query): boolean {
   return (
     !query.q &&
+    !query.match &&
     !query.like &&
     !query.tags.length &&
     !query.categories.length &&
@@ -253,6 +268,8 @@ function buildFragment(query: Query): Fragment {
   // AND-ed: the words you insisted on, among the passages that look like what you pasted.
   const expressions = [
     ...(query.q ? [toMatchExpression(query.q)] : []),
+    // Verbatim. If it is malformed that is worth saying out loud, which runQuery does.
+    ...(query.match ? [query.match] : []),
     ...(like.expression ? [`(${like.expression})`] : []),
   ];
   const match = expressions.length > 1 ? expressions.map((e) => `(${e})`).join(' AND ') : expressions[0];
@@ -337,6 +354,14 @@ export interface QueryResult {
   total: number;
   /** Content words derived from `like`, so a result can show why it matched. */
   terms: string[];
+  /**
+   * The engine's complaint, when the expression was malformed.
+   *
+   * An empty result set and a syntax error look identical to a caller, which is how a broken query
+   * compiler shipped unnoticed. A half-typed query still returns no rows rather than throwing — but
+   * it now says why.
+   */
+  error?: string;
   facets: {
     tags: FacetValue[];
     categories: FacetValue[];
@@ -395,13 +420,15 @@ export async function runQuery(db: Db, query: Query): Promise<QueryResult> {
       Number(
         await db.scalar(`SELECT count(*) ${fragment.from} WHERE ${fragment.where}`, fragment.params),
       ) || 0;
-  } catch {
-    // A malformed FTS5 expression — easily produced mid-typing — must not take the page down.
+  } catch (err) {
+    // A malformed FTS5 expression — easily produced mid-typing, or by hand in `match` — must not
+    // take the page down. It must also not masquerade as "nothing found".
     return {
       query,
       parts: [],
       total: 0,
       terms: fragment.terms,
+      error: err instanceof Error ? err.message : String(err),
       facets: { tags: [], categories: [], kinds: [], types: [] },
     };
   }

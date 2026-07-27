@@ -1257,3 +1257,62 @@ test('an index built before stemming is rebuilt, not left behind', async () => {
   assert.deepEqual(await migrateFtsTokenizer(db), []);
   await db.close();
 });
+
+test('?match= runs a raw FTS5 expression verbatim, and reports a bad one', async () => {
+  const db = await site('t-match');
+  const run = (search) => runQuery(db, parseQuery(new URLSearchParams(search)));
+
+  // Real FTS5 syntax, used exactly as written — no compilation, no heuristic.
+  for (const expr of [
+    'pager',
+    'pager OR interlocking',
+    '"ordered by date"',
+    'NEAR(listing queries, 12)',
+    'ordin*',
+    'pager NOT wombat',
+  ]) {
+    const r = await run(`match=${encodeURIComponent(expr)}`);
+    assert.ok(r.total > 0, `expected hits for ${expr}`);
+    assert.equal(r.error, undefined, `${expr} should not error`);
+  }
+
+  // Nothing is rewritten: a bare word stays a bare word, so it does NOT prefix-match the way
+  // ?q= would. That difference is the whole reason this parameter exists.
+  assert.equal(parseQuery(new URLSearchParams('match=ordin')).match, 'ordin');
+
+  // A malformed expression reports the engine's complaint rather than looking like "no results".
+  // Two shapes of complaint, because they come from different layers: SQLite's tokenizer rejects an
+  // unterminated string before FTS5 ever sees it, while a balanced-but-invalid expression is FTS5's
+  // own error. Both must reach the caller.
+  const unterminated = await run('match=' + encodeURIComponent('NEAR("unclosed'));
+  assert.equal(unterminated.total, 0);
+  assert.ok(unterminated.error, 'a syntax error must be reported, not swallowed');
+  assert.match(unterminated.error, /unterminated/i);
+
+  const badSyntax = await run('match=' + encodeURIComponent('(pager OR'));
+  assert.equal(badSyntax.total, 0);
+  assert.ok(badSyntax.error);
+  assert.match(badSyntax.error, /fts5|syntax/i);
+
+  // A well-formed expression that simply matches nothing is NOT an error — the distinction the
+  // whole field exists to preserve.
+  const noHits = await run('match=' + encodeURIComponent('wombat'));
+  assert.equal(noHits.total, 0);
+  assert.equal(noHits.error, undefined, 'no matches is not a syntax error');
+
+  // It composes with the filters and with q, AND-ed.
+  const filtered = await run(`match=pager&kind=prose`);
+  assert.ok(filtered.total > 0);
+  assert.equal((await run(`match=pager&kind=code`)).total, 0);
+  const both = await run(`q=pages&match=${encodeURIComponent('pager')}`);
+  assert.ok(both.total > 0);
+  assert.equal((await run(`q=wombat&match=${encodeURIComponent('pager')}`)).total, 0);
+
+  // And it round-trips through a URL like every other parameter.
+  const round = parseQuery(new URLSearchParams(queryToString(parseQuery(
+    new URLSearchParams('match=' + encodeURIComponent('NEAR(a b, 5)')),
+  ))));
+  assert.equal(round.match, 'NEAR(a b, 5)');
+  assert.equal(round.sort, 'relevance', 'match implies relevance, like q does');
+  await db.close();
+});
