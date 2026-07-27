@@ -333,6 +333,15 @@ test('search returns parts, ranked, with the document they belong to', async () 
   assert.match(page.body, /\/part\//, 'results should deep-link to a part');
   assert.match(page.body, /<mark>/);
 
+  // Multi-word queries. Covered explicitly because the callers swallow FTS5 syntax errors into an
+  // empty result — which once hid a shipped regression where every multi-word query returned
+  // nothing while single-word ones worked. An empty result is indistinguishable from "no match".
+  assert.ok((await searchParts(db, 'ordinal order')).length > 0, 'two words that co-occur');
+  assert.ok((await searchParts(db, 'listing queries table')).length > 0, 'three words');
+  assert.equal((await searchParts(db, 'ordinal wombat')).length, 0, 'words are AND-ed, not OR-ed');
+  // A quoted phrase, taken from a part's prose rather than a document title — those are separate
+  // indexes, and searchParts only sees the former.
+  assert.ok((await searchParts(db, '"ordered by date"')).length > 0, 'a quoted phrase');
   assert.equal((await searchParts(db, '')).length, 0);
   // A complete word always matches, which is what the exact-OR-prefix expression guarantees.
   assert.ok((await searchParts(db, 'ordinal')).length > 0, 'a complete word matches');

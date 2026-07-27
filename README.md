@@ -298,7 +298,7 @@ primitives. What *is* implemented is the consequence that is easy to get wrong: 
 contributes the empty string to the FTS index, never its text. An index over content the reader
 cannot decrypt would leak it — `snippet()` would happily quote it back.
 
-## Eight things that will bite you
+## Ten things that will bite you
 
 Each of these cost real debugging time and is verified by a test.
 

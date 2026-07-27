@@ -394,13 +394,16 @@ const FTS5_OPERATORS = new Set(['AND', 'OR', 'NOT', 'NEAR']);
  * from "paging", the tool is a second index on FTS5's `trigram` tokenizer — available in this build —
  * not giving up stemming.
  *
- * Groups are juxtaposed, which FTS5 reads as AND: every word must appear somehow.
+ * Groups are joined with an explicit `AND`. Implicit AND — juxtaposition — is only valid between
+ * bare terms in FTS5; between parenthesised groups it is a syntax error, which the callers' catch
+ * blocks then swallow into an empty result. That shipped once: every multi-word query silently
+ * returned nothing while single-word queries worked fine.
  */
 export function toMatchExpression(query: string): string {
   const tokens = query.split(/\s+/).filter(Boolean);
   const isPlainWords = /^[\w\s]+$/.test(query) && !tokens.some((t) => FTS5_OPERATORS.has(t));
   if (!isPlainWords) return query;
-  return tokens.map((word) => `("${word}" OR "${word}"*)`).join(' ');
+  return tokens.map((word) => `("${word}" OR "${word}"*)`).join(' AND ');
 }
 
 
