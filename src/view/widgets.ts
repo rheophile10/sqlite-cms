@@ -27,6 +27,7 @@ export const BUILTIN_WIDGETS = [
   'figure',
   'video',
   'story',
+  'cards',
   'raw',
   'sealed',
 ] as const;
@@ -147,6 +148,26 @@ const STORY = `<section class="part story" id="{{anchor}}">
   {{/if}}
 </section>`;
 
+// A grid of link cards — projects, tools, anything with a name and a destination.
+//
+// The payload is a list, which is the point: a landing page's project grid is *data*, not markup, so
+// it can be reordered, filtered or re-skinned without touching HTML. `featured` is honoured by the
+// stylesheet rather than by the template, so what "featured" looks like stays a theme decision.
+const CARDS = `<section class="part cards" id="{{anchor}}">
+  {{#if title}}<h2 class="cards-title">{{title}}</h2>{{/if}}
+  <div class="cardgrid">
+    {{#each items}}
+    <a class="cardtile{{#if featured}} featured{{/if}}" href="{{#if live}}{{live}}{{else}}{{repo}}{{/if}}"
+       {{#if external}}target="_blank" rel="noopener"{{/if}}>
+      {{#if emoji}}<span class="cardtile-emoji">{{emoji}}</span>{{/if}}
+      <span class="cardtile-name">{{name}}</span>
+      {{#if lang}}<span class="cardtile-lang">{{lang}}</span>{{/if}}
+      <span class="cardtile-tagline">{{tagline}}</span>
+    </a>
+    {{/each}}
+  </div>
+</section>`;
+
 // A whole self-contained document, embedded.
 //
 // For an entry that is not prose at all — an interactive piece that brings its own stylesheet and
@@ -201,6 +222,7 @@ export const DEFAULT_WIDGETS: Record<string, string> = {
   'widget:figure': FIGURE,
   'widget:video': VIDEO,
   'widget:story': STORY,
+  'widget:cards': CARDS,
   'widget:raw': RAW,
   'widget:sealed': SEALED,
 };

@@ -13,6 +13,7 @@ import { getCollectionBySlug, listCollections } from '../model/collections.js';
 import {
   ancestorsOf,
   childrenOf,
+  getDocumentBySlug,
   getPublishedBySlug,
   listDocuments,
   searchDocuments,
@@ -353,6 +354,19 @@ export async function renderPath(db: Db, path: string, options: RenderOptions): 
 
   switch (route.name) {
     case 'index': {
+      // A site can put a document in front of its listing: give a page the slug `home` and its
+      // parts render above the posts. That is how a landing page becomes content rather than a
+      // template — without the index having to know anything about what is on it.
+      const home = await getDocumentBySlug(db, 'page', 'home');
+      const intro =
+        home && home.status === 'published'
+          ? renderParts(templates, await listParts(db, home.id), {
+              site: ctx.site,
+              base,
+              unlocked: false,
+            })
+          : '';
+
       const docs = await listDocuments(db, { type: 'post', status: 'published' });
       const views: DocView[] = [];
       for (const doc of docs) views.push(docView(base, doc, await termsForDocument(db, doc.id)));
@@ -373,6 +387,7 @@ export async function renderPath(db: Db, path: string, options: RenderOptions): 
           ...ctx,
           query: '',
           card: await cardFor(db, { base, origin: options.origin }),
+          intro,
           posts: views,
           categories,
           tags,

@@ -101,7 +101,8 @@ const LAYOUT = `<!doctype html>
 </html>
 `;
 
-const INDEX = `<h1 class="page-title">{{site.tagline}}</h1>
+const INDEX = `{{#if intro}}<div class="intro">{{{intro}}}</div>{{/if}}
+{{#if intro}}{{else}}<h1 class="page-title">{{site.tagline}}</h1>{{/if}}
 {{#if posts}}
 <ul class="postlist">
   {{#each posts}}
@@ -478,6 +479,21 @@ mark{background:var(--mark);border-radius:2px;padding:0 2px}
   color:var(--muted);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
 .part.raw .raw-caption{color:var(--muted);font-size:13px;margin-top:9px;
   font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+.part.cards{margin:40px 0}
+.cards-title{font-size:12px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);
+  margin:0 0 14px;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+.cardgrid{display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(240px,1fr))}
+.cardtile{display:flex;flex-direction:column;gap:3px;padding:15px 16px;border:1px solid var(--rule);
+  border-radius:12px;text-decoration:none;color:var(--fg);background:var(--panel,transparent)}
+.cardtile:hover{border-color:var(--accent)}
+.cardtile.featured{border-color:color-mix(in srgb, var(--accent) 45%, var(--rule))}
+.cardtile-emoji{font-size:19px}
+.cardtile-name{font-weight:700;letter-spacing:-.01em}
+.cardtile-lang{font-size:11px;text-transform:uppercase;letter-spacing:.09em;color:var(--muted);
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+.cardtile-tagline{font-size:14px;color:var(--muted);margin-top:4px}
+.intro{margin-bottom:8px}
+
 /* structure */
 .toc{list-style:none;margin:26px 0 0;padding:0;font-size:16px}
 .toc li{padding:5px 0;border-top:1px solid var(--rule)}

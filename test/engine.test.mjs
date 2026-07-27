@@ -1316,3 +1316,52 @@ test('?match= runs a raw FTS5 expression verbatim, and reports a bad one', async
   assert.equal(round.sort, 'relevance', 'match implies relevance, like q does');
   await db.close();
 });
+
+test('a `home` page document renders above the index listing', async () => {
+  const db = await site('t-home');
+
+  // With no such document, the index is unchanged: the tagline headline and the posts.
+  let index = await html(db, '/p/');
+  assert.match(index.body, /class="page-title"/);
+  assert.doesNotMatch(index.body, /class="intro"/);
+
+  const home = await createDocument(db, { type: 'page', title: 'Home', slug: 'home', status: 'draft' });
+  await setParts(db, home, [
+    { kind: 'prose', anchor: 'hero', data: { html: '<p>flowing code</p>' } },
+    {
+      kind: 'cards',
+      anchor: 'projects',
+      data: {
+        title: 'Projects',
+        items: [
+          { name: 'plastron', emoji: '🐢', lang: 'TypeScript', tagline: 'a reactive substrate',
+            live: 'https://plastron.ca', external: true, featured: true },
+          { name: 'kirox', lang: 'Zig', tagline: 'an OS', repo: 'https://github.com/x/kirox' },
+        ],
+      },
+    },
+  ]);
+
+  // A draft home document is not shown — the index respects status like everything else.
+  index = await html(db, '/p/');
+  assert.doesNotMatch(index.body, /flowing code/);
+
+  await updateDocument(db, home, { status: 'published' });
+  index = await html(db, '/p/');
+  assert.match(index.body, /class="intro"/);
+  assert.match(index.body, /flowing code/);
+  // The card grid is data, rendered by widget:cards.
+  assert.match(index.body, /class="cardgrid"/);
+  assert.match(index.body, /plastron/);
+  assert.match(index.body, /cardtile featured/, 'featured is a class, so the theme decides');
+  assert.match(index.body, /target="_blank"/, 'only the external one');
+  assert.match(index.body, /href="https:\/\/github\.com\/x\/kirox"/, 'falls back to repo');
+  // The posts are still listed underneath.
+  assert.match(index.body, /Hello from inside the database/);
+  // And the tagline headline steps aside, rather than competing with the hero.
+  assert.doesNotMatch(index.body, /<h1 class="page-title">/);
+
+  // It is still an ordinary page at its own URL, so /p/home/ works too.
+  assert.equal((await html(db, '/p/home/')).status, 200);
+  await db.close();
+});
