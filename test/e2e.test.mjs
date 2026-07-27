@@ -295,6 +295,12 @@ test('file://: a draft is previewable but not reachable as a page', async () => 
   await setBody(page, '<p>draft body here</p>');
   await saveDocument(page, 'Unpublished Thing'); // stays a draft
 
+  // saveDocument observes the *list* refresh, which happens before saveEditor's closing show().
+  // Clicking preview inside that window gets clobbered by the in-flight render — an intermittent
+  // failure rather than a reliable one. Wait for that render to land first: an unpublished document
+  // re-renders whatever was on screen, which here is the index.
+  await page.frameLocator('#site').locator('.postlist').first().waitFor({ timeout: 30_000 });
+
   // Preview renders it anyway.
   await page.click('#preview');
   await waitForText(page, 'draft body here');
