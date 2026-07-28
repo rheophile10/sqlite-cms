@@ -170,7 +170,7 @@ export {
 } from './view/theme.js';
 export type { PageTemplateName } from './view/theme.js';
 
-export { BUILTIN_WIDGETS, DEFAULT_WIDGETS, renderPart, renderParts, widgetTemplateName } from './view/widgets.js';
+export { BUILTIN_WIDGETS, DEFAULT_WIDGETS, mediaUrl, renderPart, renderParts, widgetTemplateName } from './view/widgets.js';
 export type { WidgetContext } from './view/widgets.js';
 
 export { clip, flattenTree, formatDate, renderPath, renderPreview, routeOf } from './view/render.js';

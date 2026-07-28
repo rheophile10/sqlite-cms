@@ -46,6 +46,7 @@ const LAYOUT = `<!doctype html>
      /p/demand-paging/media/x.svg when a Service Worker is serving real URLs. -->
 <base href="{{site.home}}">
 <title>{{title}} · {{site.title}}</title>
+{{#if card.url}}<link rel="canonical" href="{{card.url}}">{{/if}}
 {{#if card}}
 <!-- Link preview. Present here so view-source is honest and a browser extension can read it — but a
      crawler runs no JavaScript and no Service Worker intercepts for it, so previews only actually
@@ -424,9 +425,15 @@ a{color:var(--accent)}
 .part.sealed .sealed-title{margin:0 0 6px;font-weight:700;color:var(--fg);font-size:13px;
   text-transform:uppercase;letter-spacing:.08em;
   font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
-.part.story{display:grid;grid-template-columns:1fr;gap:16px;margin:30px 0;padding-top:24px;
+.part.story{display:grid;grid-template-columns:minmax(0,1fr);gap:16px;margin:30px 0;padding-top:24px;
   border-top:1px solid var(--rule)}
-@media (min-width:720px){ .part.story{grid-template-columns:1fr 1fr;align-items:start} }
+@media (min-width:720px){ .part.story{grid-template-columns:minmax(0,1fr) minmax(0,1fr);align-items:start} }
+/* minmax(0,…), not 1fr: a grid track defaults to min-width:auto and so refuses to shrink below its
+   content's min-content width. One <pre> inside a story pushed the track to 781px in a 390px
+   viewport — 415px of horizontal overflow on a phone. The children need min-width:0 for the same
+   reason, and long unbroken tokens need somewhere to break. */
+.part.story > *{min-width:0}
+.part.prose,.part.story .story-text{overflow-wrap:anywhere}
 .part.story .story-step{margin:0 0 4px;color:var(--accent);font-size:11px;font-weight:700;
   text-transform:uppercase;letter-spacing:.1em;
   font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}

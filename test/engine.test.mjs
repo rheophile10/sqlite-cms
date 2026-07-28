@@ -1365,3 +1365,45 @@ test('a `home` page document renders above the index listing', async () => {
   assert.equal((await html(db, '/p/home/')).status, 200);
   await db.close();
 });
+
+test('media references resolve whether they are slugs, URLs or data: URIs', async () => {
+  const { mediaUrl } = await import(B + 'view/widgets.js');
+
+  // A bare slug is looked up under the content base.
+  assert.equal(mediaUrl('paging.svg', '/p/'), '/p/media/paging.svg');
+  // Anything already absolute is passed through untouched. Prefixing an inline data: URI produced
+  // `/p/media/data:image/png;base64,…` — a broken image, and it shipped.
+  assert.equal(mediaUrl('data:image/png;base64,AAAA', '/p/'), 'data:image/png;base64,AAAA');
+  assert.equal(mediaUrl('https://cdn.test/x.png', '/p/'), 'https://cdn.test/x.png');
+  assert.equal(mediaUrl('//cdn.test/x.png', '/p/'), '//cdn.test/x.png');
+  assert.equal(mediaUrl('/already/rooted.png', '/p/'), '/already/rooted.png');
+  assert.equal(mediaUrl('', '/p/'), '');
+  assert.equal(mediaUrl(undefined, '/p/'), '');
+
+  // And through the widget, for every kind that takes media.
+  const db = await site('t-mediaurl', { seed: false });
+  const templates = await loadTemplates(db);
+  const doc = await createDocument(db, { title: 'M', status: 'published' });
+  const { getPart } = await import(B + 'model/parts.js');
+  const render = async (kind, data) =>
+    renderPart(templates, await getPart(db, await addPart(db, doc, { kind, data })), {
+      site: {},
+      base: '/p/',
+    });
+
+  assert.match(await render('figure', { src: 'a.png' }), /src="\/p\/media\/a\.png"/);
+  assert.match(
+    await render('figure', { src: 'data:image/png;base64,ZZZ' }),
+    /src="data:image\/png;base64,ZZZ"/,
+  );
+  assert.doesNotMatch(
+    await render('figure', { src: 'data:image/png;base64,ZZZ' }),
+    /media\/data:/,
+    'a data: URI must never be prefixed',
+  );
+  assert.match(
+    await render('video', { src: 'clip.webm', mime: 'video/webm', poster: 'p.png' }),
+    /poster="\/p\/media\/p\.png"[\s\S]*src="\/p\/media\/clip\.webm"/,
+  );
+  await db.close();
+});

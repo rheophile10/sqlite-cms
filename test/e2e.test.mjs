@@ -809,3 +809,38 @@ test('the story layout reflows from one column to two', async () => {
   assert.equal(phone.split(' ').length, 1, `phone should be one column, got "${phone}"`);
   assert.equal(desktop.split(' ').length, 2, `desktop should be two columns, got "${desktop}"`);
 });
+
+test('a wide code block inside a story cannot push the page sideways', async () => {
+  // The specific failure this guards: a grid track defaults to min-width:auto and will not shrink
+  // below its content's min-content width, so one <pre> inside a story part blew the track out to
+  // 781px in a 390px viewport — 415px of overflow. The seeded content has no story part carrying a
+  // <pre>, which is exactly why the general responsive test did not catch it.
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  const page = await context.newPage();
+  await page.goto(FILE_URL);
+  await waitReady(page);
+  await siteFrame(page);
+  await page.frameLocator('#site').getByRole('link', { name: 'Demand paging, illustrated' }).click();
+  await waitForTitle(page, /Demand paging/);
+  const frame = await siteFrame(page);
+
+  const overflow = await frame.evaluate(() => {
+    const probe = document.createElement('section');
+    probe.className = 'part story';
+    probe.innerHTML =
+      '<div class="story-text"><h3>Step</h3>' +
+      '<pre><code>' +
+      'const veryLongUnbreakableIdentifier = someModule.withAnotherLongName(andAnotherArgument);' +
+      '</code></pre>' +
+      '<p>https://example.test/an/extremely/long/unbroken/url/that/cannot/wrap/anywhere/at/all</p>' +
+      '</div><div class="story-media"><p>clip</p></div>';
+    document.querySelector('.content').append(probe);
+    const de = document.documentElement;
+    const value = de.scrollWidth - de.clientWidth;
+    probe.remove();
+    return value;
+  });
+
+  assert.equal(overflow, 0, `a story with a wide <pre> overflowed by ${overflow}px at 390px`);
+  await context.close();
+});

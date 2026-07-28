@@ -50,6 +50,24 @@ export interface WidgetContext {
  * `{{{html}}}` instead of `{{{data.html}}}` — templates are content here, and the shorter form is
  * what an author will actually write. The reserved names below win on collision.
  */
+/**
+ * Resolve a media reference for a template.
+ *
+ * A widget cannot branch on the shape of a value, so it gets a resolved URL to interpolate. Bare
+ * slugs are looked up under the content base; anything already absolute — an `https:` image on
+ * another host, or an inline `data:` URI — is passed through untouched.
+ *
+ * That passthrough is not hypothetical. Prefixing unconditionally turned every inline `data:` image
+ * into `/blog/media/data:image/png;base64,…`, which is a broken image and an absurd URL, and it
+ * shipped because the test only checked the first image on a page that happened not to have one.
+ */
+export function mediaUrl(value: unknown, base: string): string {
+  if (typeof value !== 'string' || !value) return '';
+  if (/^(data:|blob:|https?:|\/\/)/i.test(value)) return value;
+  if (value.startsWith('/')) return value;
+  return `${base}media/${value}`;
+}
+
 export function renderPart(
   templates: Record<string, string>,
   part: Part,
@@ -60,6 +78,9 @@ export function renderPart(
     templates[widgetTemplateName(part.kind)] ?? templates[widgetTemplateName('html')] ?? '';
   return renderTemplate(template, {
     ...data,
+    // Resolved forms, so a template never has to know whether it was handed a slug or a URI.
+    srcUrl: mediaUrl(data.src, context.base),
+    posterUrl: mediaUrl(data.poster, context.base),
     anchor: part.anchor,
     kind: part.kind,
     ordinal: part.ordinal,
@@ -119,15 +140,15 @@ const CALLOUT = `<aside class="part callout {{tone}}" id="{{anchor}}">
 </aside>`;
 
 const FIGURE = `<figure class="part figure" id="{{anchor}}">
-  <img src="{{base}}media/{{src}}" alt="{{alt}}">
+  <img src="{{srcUrl}}" alt="{{alt}}" loading="lazy">
   {{#if caption}}<figcaption>{{{caption}}}</figcaption>{{/if}}
 </figure>`;
 
 // Media is referenced by slug and resolved against the content base, so the same row works at
 // file:// (rewritten to a data: URI) and when hosted (fetched through the Service Worker).
 const VIDEO = `<figure class="part video" id="{{anchor}}">
-  <video controls preload="metadata"{{#if poster}} poster="{{base}}media/{{poster}}"{{/if}}>
-    <source src="{{base}}media/{{src}}" type="{{mime}}">
+  <video controls preload="metadata"{{#if posterUrl}} poster="{{posterUrl}}"{{/if}}>
+    <source src="{{srcUrl}}" type="{{mime}}">
   </video>
   {{#if caption}}<figcaption>{{{caption}}}</figcaption>{{/if}}
 </figure>`;
@@ -141,8 +162,8 @@ const STORY = `<section class="part story" id="{{anchor}}">
   </div>
   {{#if src}}
   <div class="story-media">
-    <video controls preload="metadata"{{#if poster}} poster="{{base}}media/{{poster}}"{{/if}}>
-      <source src="{{base}}media/{{src}}" type="{{mime}}">
+    <video controls preload="metadata"{{#if posterUrl}} poster="{{posterUrl}}"{{/if}}>
+      <source src="{{srcUrl}}" type="{{mime}}">
     </video>
   </div>
   {{/if}}
